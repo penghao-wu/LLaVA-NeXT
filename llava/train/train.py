@@ -1219,6 +1219,19 @@ class LazySupervisedDataset(Dataset):
         if isinstance(i, int):
             data_dict = dict(input_ids=data_dict["input_ids"][0], labels=data_dict["labels"][0])
 
+
+        # check whether image tokens will be truncated, if so, discard this sample
+        if "image" in self.list_data_dict[i] or "video" in self.list_data_dict[i]:
+            image_crops_num = sum([len(image_i[0]) for image_i in image])
+            per_crop_token_len = 576
+            image_token_num = image_crops_num*(per_crop_token_len+1)
+            num_images = (data_dict['input_ids'] == IMAGE_TOKEN_INDEX).sum()
+            last_image_token_index = torch.where(data_dict['input_ids'] == IMAGE_TOKEN_INDEX)[0].tolist()[-1]
+    
+            if last_image_token_index+image_token_num-(num_images-1) >= self.tokenizer.model_max_length:
+                return self._get_item(i + 1)
+            
+
         # image exist in the data
         if "image" in self.list_data_dict[i]:
             data_dict["image"] = image
