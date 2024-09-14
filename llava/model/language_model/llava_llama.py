@@ -379,8 +379,10 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
 		loss = None
 		if labels is not None:
 			# Shift so that tokens < n predict n
-			shift_logits = logits[..., :-1, :].contiguous()
-			shift_labels = labels[..., 1:].contiguous()
+			# shift_logits = logits[..., :-1, :].contiguous()
+			# shift_labels = labels[..., 1:].contiguous()
+			shift_logits = logits
+			shift_labels = labels
 			# Flatten the tokens
 			loss_fct = CrossEntropyLoss()
 			shift_logits = shift_logits.view(-1, self.config.vocab_size)

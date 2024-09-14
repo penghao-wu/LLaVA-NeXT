@@ -1234,7 +1234,7 @@ class LazySupervisedDataset(Dataset):
             num_images = (data_dict['input_ids'] == IMAGE_TOKEN_INDEX).sum()
             last_image_token_index = torch.where(data_dict['input_ids'] == IMAGE_TOKEN_INDEX)[0].tolist()[-1]
     
-            if last_image_token_index+image_token_num-(num_images-1) >= self.tokenizer.model_max_length:
+            if last_image_token_index+image_token_num-(num_images-1) >= self.tokenizer.model_max_length-1:
                 return self._get_item(i + 1)
             
 

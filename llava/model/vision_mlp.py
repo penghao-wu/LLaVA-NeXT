@@ -36,12 +36,12 @@ class VisionMLP(nn.Module):
 
 		return image_full
 	
-def apply_rotary_pos_emb(q, k, cos, sin, position_ids_q, position_ids_k, unsqueeze_dim=1):
-	cos_q = cos[0][position_ids_q].unsqueeze(unsqueeze_dim)
-	sin_q = sin[0][position_ids_q].unsqueeze(unsqueeze_dim)
+def apply_rotary_pos_emb(q, k, cos_q, sin_q, cos_k, sin_k, position_ids_q, position_ids_k, unsqueeze_dim=1):
+	cos_q = cos_q.unsqueeze(unsqueeze_dim)
+	sin_q = sin_q.unsqueeze(unsqueeze_dim)
 	q_embed = (q * cos_q) + (rotate_half(q) * sin_q)
-	cos_k = cos[0][position_ids_k].unsqueeze(unsqueeze_dim)
-	sin_k = sin[0][position_ids_k].unsqueeze(unsqueeze_dim)
+	cos_k = cos_k.unsqueeze(unsqueeze_dim)
+	sin_k = sin_k.unsqueeze(unsqueeze_dim)
 	k_embed = (k * cos_k) + (rotate_half(k) * sin_k)
 	return q_embed, k_embed
 	
@@ -72,9 +72,12 @@ def LlamaSdpaAttention_forward(
 	value_states = value_states.view(bsz, kv_seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
 	if position_embeddings is None:
-		cos, sin = self.rotary_emb(value_states, torch.arange(position_ids_kv.shape[1], device=position_ids_kv.device, dtype=position_ids_kv.dtype).unsqueeze(0).expand(position_ids_kv.shape[0], -1))
+		cos_q, sin_q = self.rotary_emb(value_states, position_ids_q)
+		cos_k, sin_k = self.rotary_emb(value_states, position_ids_kv)
 	else:
 		cos, sin = position_embeddings
+		cos_q, sin_q = cos, sin
+		cos_k, sin_k = cos, sin
 
 	# In case static cache is used, it is an instance attribute.
 	past_key_value = getattr(self, "past_key_value", past_key_value)
@@ -84,7 +87,7 @@ def LlamaSdpaAttention_forward(
 		cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
 		key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
-	query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids_q, position_ids_kv)
+	query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos_q, sin_q, cos_k, sin_k, position_ids_q, position_ids_kv)
 
 	key_states = repeat_kv(key_states, self.num_key_value_groups)
 	value_states = repeat_kv(value_states, self.num_key_value_groups)

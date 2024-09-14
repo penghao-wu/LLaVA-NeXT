@@ -470,7 +470,11 @@ class LlavaMetaForCausalLM(ABC):
 		position_ids_image_concise = []
 		position_ids_newline = []
 
+		# this is directly the next token
 		labels_text = []
+		labels_image_full = []
+		labels_image_concise = []
+		labels_newline = []
 
 		cur_image_idx = 0
 		
@@ -501,7 +505,10 @@ class LlavaMetaForCausalLM(ABC):
 				position_ids_image_concise.append(image_info['position_ids_image_concise'])
 				position_ids_newline.append(image_info['position_ids_newline'])
 
-				labels_text.append(labels[batch_idx])
+				labels_text.append(torch.cat([labels[batch_idx][1:], torch.full((1, ), IGNORE_INDEX, device=self.device, dtype=torch.long)]))
+				labels_image_full.append(torch.full((len(image_info['position_ids_image_full']), ), IGNORE_INDEX, device=self.device, dtype=torch.long))
+				labels_image_concise.append(torch.full((len(image_info['position_ids_image_concise']), ), IGNORE_INDEX, device=self.device, dtype=torch.long))
+				labels_newline.append(torch.full((len(image_info['position_ids_newline']), ), IGNORE_INDEX, device=self.device, dtype=torch.long))
 				cur_image_idx += 1
 				continue
 
@@ -520,6 +527,11 @@ class LlavaMetaForCausalLM(ABC):
 			cur_position_ids_image_full = []
 			cur_position_ids_image_concise = []
 			cur_position_ids_newline = []
+
+			cur_labels_text = []
+			cur_labels_image_full = []
+			cur_labels_image_concise = []
+			cur_labels_newline = []
 			for i in range(len(image_token_indices) - 1):
 				cur_input_ids_noim.append(cur_input_ids[image_token_indices[i] + 1 : image_token_indices[i + 1]])
 				cur_labels_noim.append(cur_labels[image_token_indices[i] + 1 : image_token_indices[i + 1]])
@@ -527,11 +539,15 @@ class LlavaMetaForCausalLM(ABC):
 			cur_input_embeds = self.get_model().embed_tokens(torch.cat(cur_input_ids_noim))
 			cur_input_embeds_no_im = torch.split(cur_input_embeds, split_sizes, dim=0)
 			input_embeds_text.append(cur_input_embeds)
-			labels_text.append(torch.cat(cur_labels_noim))
+			# labels_text.append(torch.cat(cur_labels_noim))
 			attention_masks_text.append(torch.ones((cur_input_embeds.shape[0], 1), dtype=torch.bool, device=self.device))
 			
 			for i in range(num_images + 1):
 				cur_position_ids_text.append(torch.arange(0, cur_input_embeds_no_im[i].shape[0], dtype=torch.long, device=self.device).view(-1, 1)+cur_seq_len)
+				if cur_labels_noim[i].shape[0] == 1:
+					cur_labels_text.append(torch.full((1, ), IGNORE_INDEX, device=self.device, dtype=torch.long))
+				else:
+					cur_labels_text.append(torch.cat([cur_labels_noim[i][1:], torch.full((1, ), IGNORE_INDEX, device=self.device, dtype=torch.long)]))
 				cur_seq_len += cur_input_embeds_no_im[i].shape[0]
 				if i < num_images:
 					try:
@@ -554,6 +570,15 @@ class LlavaMetaForCausalLM(ABC):
 
 					cur_seq_len += cur_image_info['image_feature'].shape[0] + cur_image_info['newline_feature'].shape[0]
 
+					cur_labels_image_full.append(torch.full((len(cur_image_info['position_ids_image_full']), ), IGNORE_INDEX, device=self.device, dtype=torch.long))
+					cur_labels_image_concise.append(torch.full((len(cur_image_info['position_ids_image_concise']), ), IGNORE_INDEX, device=self.device, dtype=torch.long))
+
+					# next token is text
+					if i == num_images-1 or image_token_indices[i] != image_token_indices[i+1]:
+						cur_labels_newline.append(torch.cat([torch.full((len(cur_image_info['position_ids_newline'])-1, ), IGNORE_INDEX, device=self.device, dtype=torch.long), cur_labels_noim[i+1][:1]]))
+					# next token is image
+					else:
+						cur_labels_newline.append(torch.full((len(cur_image_info['position_ids_newline']), ), IGNORE_INDEX, device=self.device, dtype=torch.long))
 
 			input_embeds_image_full.append(torch.cat(cur_input_embeds_image_full))
 			input_embeds_newline.append(torch.cat(cur_input_embeds_newline))
@@ -566,6 +591,11 @@ class LlavaMetaForCausalLM(ABC):
 			position_ids_image_full.append(torch.cat(cur_position_ids_image_full))
 			position_ids_image_concise.append(torch.cat(cur_position_ids_image_concise))
 			position_ids_newline.append(torch.cat(cur_position_ids_newline))
+
+			labels_text.append(torch.cat(cur_labels_text))
+			labels_image_full.append(torch.cat(cur_labels_image_full))
+			labels_image_concise.append(torch.cat(cur_labels_image_concise))
+			labels_newline.append(torch.cat(cur_labels_newline))
 
 		
 		for batch_idx in range(len(input_ids)):
@@ -601,7 +631,7 @@ class LlavaMetaForCausalLM(ABC):
 			cur_input_embeds_regular_all = torch.cat([input_embeds_image_full[batch_idx], input_embeds_newline[batch_idx], input_embeds_text[batch_idx]])
 			cur_attention_masks_regular_all = torch.cat([attention_masks_image_full[batch_idx], attention_masks_newline[batch_idx], attention_masks_text[batch_idx]])
 			cur_position_ids_regular_all = torch.cat([position_ids_image_full[batch_idx], position_ids_newline[batch_idx], position_ids_text[batch_idx]])
-			cur_labels_regular_all = torch.cat([torch.full((image_full_len[batch_idx]+newline_len[batch_idx], ), IGNORE_INDEX, device=self.device, dtype=torch.long), labels_text[batch_idx]])
+			cur_labels_regular_all = torch.cat([labels_image_full[batch_idx], labels_newline[batch_idx], labels_text[batch_idx]])
 
 			if len(cur_input_embeds_regular_all) < regular_max_seq:
 				padding_len = regular_max_seq - len(cur_input_embeds_regular_all)
@@ -632,7 +662,7 @@ class LlavaMetaForCausalLM(ABC):
 			cur_attention_masks_fast_kv = torch.cat([attention_masks_image_full[batch_idx], attention_masks_image_concise[batch_idx], attention_masks_newline[batch_idx], attention_masks_text[batch_idx]])
 			cur_position_ids_fast_q = torch.cat([position_ids_image_concise[batch_idx], position_ids_newline[batch_idx], position_ids_text[batch_idx]])
 			cur_position_ids_fast_kv = torch.cat([position_ids_image_full[batch_idx], position_ids_image_concise[batch_idx], position_ids_newline[batch_idx], position_ids_text[batch_idx]])
-			cur_labels_fast_q = torch.cat([torch.full((image_concise_len[batch_idx]+newline_len[batch_idx], ), IGNORE_INDEX, device=self.device, dtype=torch.long), labels_text[batch_idx]])
+			cur_labels_fast_q = torch.cat([labels_image_concise[batch_idx], labels_newline[batch_idx], labels_text[batch_idx]])
 
 			if len(cur_position_ids_fast_q) < fast_q_max_seq:
 				padding_len = fast_q_max_seq - len(cur_position_ids_fast_q)
@@ -666,6 +696,7 @@ class LlavaMetaForCausalLM(ABC):
 		position_ids_fast_kv = position_ids_fast_kv.view(position_ids_regular_all.shape[0], -1)
 
 		return None, position_ids_regular_all, attention_masks_regular_4d, past_key_values, input_embeds_regular_all, labels_regular_all, labels_fast_q, length_info, position_ids_fast_q, position_ids_fast_kv, attention_masks_fast_4d
+		# return None, position_ids_regular_all, attention_masks_regular_4d, past_key_values, input_embeds_regular_all, labels_regular_all
 
 	def initialize_vision_tokenizer(self, model_args, tokenizer):
 		if model_args.mm_use_im_patch_token:
