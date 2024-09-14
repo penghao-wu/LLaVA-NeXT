@@ -47,8 +47,7 @@ class LlavaMetaModel:
                     [VisionMLP(config) for layer_idx in range(0, config.num_of_vision_mlp_layers)]
                     )
 
-			if "unpad" in getattr(config, "mm_patch_merge_type", ""):
-				self.image_newline = nn.Parameter(torch.empty(config.hidden_size, dtype=self.dtype))
+			self.image_newline = nn.Parameter(torch.empty(config.hidden_size, dtype=self.dtype))
 
 	def get_vision_tower(self):
 		vision_tower = getattr(self, "vision_tower", None)
@@ -117,9 +116,9 @@ class LlavaMetaModel:
                     [VisionMLP(self.config) for layer_idx in range(0, num_of_vision_mlp_layers)]
                     )
 
-			if "unpad" in mm_patch_merge_type:
-				embed_std = 1 / torch.sqrt(torch.tensor(self.config.hidden_size, dtype=self.dtype))
-				self.image_newline = nn.Parameter(torch.randn(self.config.hidden_size, dtype=self.dtype) * embed_std)
+			# if "unpad" in mm_patch_merge_type:
+			embed_std = 1 / torch.sqrt(torch.tensor(self.config.hidden_size, dtype=self.dtype))
+			self.image_newline = nn.Parameter(torch.randn(self.config.hidden_size, dtype=self.dtype) * embed_std)
 		else:
 			# In case it is frozen by LoRA
 			for p in self.mm_projector.parameters():
@@ -130,7 +129,7 @@ class LlavaMetaModel:
 
 			def get_w(weights, keyword):
 				return {k.split(keyword + ".")[1]: v for k, v in weights.items() if keyword in k}
-
+			self.image_newline.data = mm_projector_weights['model.image_newline']
 			incompatible_keys = self.mm_projector.load_state_dict(get_w(mm_projector_weights, "mm_projector"))
 			rank0_print(f"Loaded mm projector weights from {pretrain_mm_mlp_adapter}. Incompatible keys: {incompatible_keys}")
 			incompatible_keys = self.vision_resampler.load_state_dict(get_w(mm_projector_weights, "vision_resampler"), strict=False)
@@ -200,8 +199,8 @@ def calculate_causal_attention_mask(position_ids_q, position_ids_kv, attention_m
 	bs = position_ids_q.shape[0]
 	position_ids_q = position_ids_q.view(bs, -1, 1)
 	position_ids_kv = position_ids_kv.view(bs, -1, 1)
-	causal_mask = position_ids_q <= position_ids_kv.transpose(1, 2)
-	causal_mask = causal_mask.float().view(bs, 1, position_ids_q.shape[1], position_ids_kv.shape[1])
+	causal_mask = position_ids_q >= position_ids_kv.transpose(1, 2)
+	causal_mask = causal_mask.to(dtype).view(bs, 1, position_ids_q.shape[1], position_ids_kv.shape[1])
 	attention_mask_4d = attention_mask.view(bs, 1, 1, -1).repeat(1, 1, position_ids_q.shape[1], 1)
 
 	causal_mask = causal_mask.masked_fill(causal_mask == 0, min_dtype)
@@ -266,7 +265,7 @@ class LlavaMetaForCausalLM(ABC):
 				if self.config.add_faster_video:
 					cur_mm_spatial_pool_stride = cur_mm_spatial_pool_stride * 2
 					faster_video_feature = self.get_2dPool(feat,cur_mm_spatial_pool_stride)
-			if slower_img_feat is not 0:
+			if slower_img_feat != 0:
 				all_videos_or_images_features.append(slower_img_feat)
 			else:
 				all_videos_or_images_features.append(feat)
@@ -318,6 +317,7 @@ class LlavaMetaForCausalLM(ABC):
 			position_ids_image_concise = torch.zeros((height_concise*width_concise, 1), device=image_feature.device, dtype=torch.long)
 
 			newline_feature = self.model.image_newline[None]
+			image_feature = image_feature.flatten(0,1)
 
 		else:
 			if image_feature.shape[0] > 1:
@@ -363,6 +363,7 @@ class LlavaMetaForCausalLM(ABC):
 				position_ids_image_concise = attention_masks_image_concise.cumsum(0)-1
 
 				newline_feature = self.model.image_newline[None]
+				image_feature = image_feature.flatten(0,1)
 		
 		image_info = {}
 		image_info['image_feature'] = image_feature
@@ -537,7 +538,7 @@ class LlavaMetaForCausalLM(ABC):
 						cur_image_features = image_features[cur_image_idx]
 					except IndexError:
 						cur_image_features = image_features[cur_image_idx - 1]
-					cur_image_info = self.prepare_image_information(cur_image_features)
+					cur_image_info = self.prepare_image_information(cur_image_features, image_sizes[cur_image_idx])
 					cur_image_idx += 1
 
 					cur_input_embeds_image_full.append(cur_image_info['image_feature'])
@@ -577,7 +578,7 @@ class LlavaMetaForCausalLM(ABC):
 			position_ids_text[batch_idx] = position_ids_text[batch_idx][:text_max_len]
 			labels_text[batch_idx] = labels_text[batch_idx][:text_max_len]
 
-		assert getattr(self.config, "tokenizer_padding_side", "right") == "left"
+		assert getattr(self.config, "tokenizer_padding_side", "right") == "right"
 
 		image_full_len = [len(input_embeds_image_full[batch_idx]) for batch_idx in range(len(input_ids))]
 		image_concise_len = [len(attention_masks_image_concise[batch_idx]) for batch_idx in range(len(input_ids))]
@@ -600,14 +601,14 @@ class LlavaMetaForCausalLM(ABC):
 			cur_input_embeds_regular_all = torch.cat([input_embeds_image_full[batch_idx], input_embeds_newline[batch_idx], input_embeds_text[batch_idx]])
 			cur_attention_masks_regular_all = torch.cat([attention_masks_image_full[batch_idx], attention_masks_newline[batch_idx], attention_masks_text[batch_idx]])
 			cur_position_ids_regular_all = torch.cat([position_ids_image_full[batch_idx], position_ids_newline[batch_idx], position_ids_text[batch_idx]])
-			cur_labels_regular_all = torch.cat([torch.full((image_full_len[batch_idx]+newline_len[batch_idx]), IGNORE_INDEX, device=self.device, dtype=torch.long), labels_text[batch_idx]])
+			cur_labels_regular_all = torch.cat([torch.full((image_full_len[batch_idx]+newline_len[batch_idx], ), IGNORE_INDEX, device=self.device, dtype=torch.long), labels_text[batch_idx]])
 
 			if len(cur_input_embeds_regular_all) < regular_max_seq:
 				padding_len = regular_max_seq - len(cur_input_embeds_regular_all)
 				cur_input_embeds_regular_all = torch.cat([cur_input_embeds_regular_all, torch.zeros((padding_len, cur_input_embeds_regular_all.shape[-1]), device=self.device, dtype=cur_input_embeds_regular_all.dtype)])
 				cur_attention_masks_regular_all = torch.cat([cur_attention_masks_regular_all, torch.zeros((padding_len, 1), device=self.device, dtype=torch.bool)])
 				cur_position_ids_regular_all = torch.cat([cur_position_ids_regular_all, torch.zeros((padding_len, 1), device=self.device, dtype=torch.long)])
-				cur_labels_regular_all = torch.cat([cur_labels_regular_all, torch.full((padding_len), IGNORE_INDEX, device=self.device, dtype=torch.long)])
+				cur_labels_regular_all = torch.cat([cur_labels_regular_all, torch.full((padding_len, ), IGNORE_INDEX, device=self.device, dtype=torch.long)])
 
 			input_embeds_regular_all.append(cur_input_embeds_regular_all)
 			attention_masks_regular_all.append(cur_attention_masks_regular_all)
@@ -619,8 +620,8 @@ class LlavaMetaForCausalLM(ABC):
 		position_ids_regular_all = torch.stack(position_ids_regular_all)
 		labels_regular_all = torch.stack(labels_regular_all)
 
-		attention_masks_regular_4d = calculate_causal_attention_mask(position_ids_regular_all, position_ids_regular_all, attention_masks_regular_all)
-
+		
+		attention_masks_regular_4d = calculate_causal_attention_mask(position_ids_regular_all, position_ids_regular_all, attention_masks_regular_all, dtype=input_embeds_regular_all.dtype)
 		# concise attention: q = [image_concise, newline, text]; kv = [image_full, image_concise, newline, text]
 
 		position_ids_fast_q = []
@@ -631,15 +632,15 @@ class LlavaMetaForCausalLM(ABC):
 			cur_attention_masks_fast_kv = torch.cat([attention_masks_image_full[batch_idx], attention_masks_image_concise[batch_idx], attention_masks_newline[batch_idx], attention_masks_text[batch_idx]])
 			cur_position_ids_fast_q = torch.cat([position_ids_image_concise[batch_idx], position_ids_newline[batch_idx], position_ids_text[batch_idx]])
 			cur_position_ids_fast_kv = torch.cat([position_ids_image_full[batch_idx], position_ids_image_concise[batch_idx], position_ids_newline[batch_idx], position_ids_text[batch_idx]])
-			cur_labels_fast_q = torch.cat([torch.full((image_concise_len[batch_idx]+newline_len[batch_idx]), IGNORE_INDEX, device=self.device, dtype=torch.long), labels_text[batch_idx]])
+			cur_labels_fast_q = torch.cat([torch.full((image_concise_len[batch_idx]+newline_len[batch_idx], ), IGNORE_INDEX, device=self.device, dtype=torch.long), labels_text[batch_idx]])
 
 			if len(cur_position_ids_fast_q) < fast_q_max_seq:
 				padding_len = fast_q_max_seq - len(cur_position_ids_fast_q)
 				cur_position_ids_fast_q = torch.cat([cur_position_ids_fast_q, torch.zeros((padding_len, 1), device=self.device, dtype=torch.long)])
-				cur_labels_fast_q = torch.cat([cur_labels_fast_q, torch.full((padding_len), IGNORE_INDEX, device=self.device, dtype=torch.long)])
+				cur_labels_fast_q = torch.cat([cur_labels_fast_q, torch.full((padding_len, ), IGNORE_INDEX, device=self.device, dtype=torch.long)])
 
 			if len(cur_position_ids_fast_kv) < fast_kv_max_seq:
-				padding_len = cur_position_ids_fast_kv - len(cur_position_ids_fast_kv)
+				padding_len = fast_kv_max_seq - len(cur_position_ids_fast_kv)
 				cur_attention_masks_fast_kv = torch.cat([cur_attention_masks_fast_kv, torch.zeros((padding_len, 1), device=self.device, dtype=torch.bool)])
 				cur_position_ids_fast_kv = torch.cat([cur_position_ids_fast_kv, torch.zeros((padding_len, 1), device=self.device, dtype=torch.long)])
 
@@ -653,9 +654,9 @@ class LlavaMetaForCausalLM(ABC):
 		position_ids_fast_kv = torch.stack(position_ids_fast_kv)
 		labels_fast_q = torch.stack(labels_fast_q)
 				
-		attention_masks_fast_4d = calculate_causal_attention_mask(position_ids_fast_q, position_ids_fast_kv, attention_masks_fast_kv)
+		attention_masks_fast_4d = calculate_causal_attention_mask(position_ids_fast_q, position_ids_fast_kv, attention_masks_fast_kv, dtype=input_embeds_regular_all.dtype)
 
-		min_dtype = torch.finfo(input_embeds_regular_all).min
+		min_dtype = torch.finfo(input_embeds_regular_all.dtype).min
 		for batch_idx in range(len(input_ids)):
 			attention_masks_fast_4d[batch_idx][:, :image_concise_len[batch_idx], :image_full_len[batch_idx]] = min_dtype
 			attention_masks_fast_4d[batch_idx][:, image_concise_len[batch_idx]:, image_full_len[batch_idx]:image_full_len[batch_idx]+image_concise_len[batch_idx]] = min_dtype

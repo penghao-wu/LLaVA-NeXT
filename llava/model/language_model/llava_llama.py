@@ -140,29 +140,32 @@ class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
 		causal_mask = attention_mask
 		hidden_states = inputs_embeds
 
-		max_len = max((position_ids.shape[1], position_ids_fast_kv.shape[1]))
-		# create position embeddings to be shared across the decoder layers
-		position_embeddings = self.rotary_emb(hidden_states, torch.arange(max_len, device=position_ids.device, dtype=position_ids.dtype).expand(position_ids.shape[0], -1))
+		# max_len = max((position_ids.shape[1], position_ids_fast_kv.shape[1]))
+		# # create position embeddings to be shared across the decoder layers
+		# position_embeddings = self.rotary_emb(hidden_states, torch.arange(max_len, device=position_ids.device, dtype=position_ids.dtype).unsqueeze(0).expand(position_ids.shape[0], -1))
+		position_embeddings = None
 
 		# decoder layers
 		all_hidden_states = () if output_hidden_states else None
 		all_self_attns = () if output_attentions else None
 		next_decoder_cache = None
 
-		vision_mlp_start_layer_idx = self.config.vision_mlp_start_layer_idx
+		fast_vision_start_layer = self.config.fast_vision_start_layer
 		bs = hidden_states.shape[0]
 
 		for layer_i, decoder_layer in enumerate(self.layers):
 			if output_hidden_states:
 				all_hidden_states += (hidden_states,)
 
-			if layer_i < vision_mlp_start_layer_idx:
+			if not self.config.fast_vision or layer_i < fast_vision_start_layer:
 				if self.gradient_checkpointing and self.training:
 					layer_outputs = self._gradient_checkpointing_func(
 						decoder_layer.__call__,
 						hidden_states,
+						None,
 						causal_mask,
 						position_ids,
+						None,
 						past_key_values,
 						output_attentions,
 						use_cache,
@@ -184,7 +187,7 @@ class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
 				hidden_states = layer_outputs[0]
 
 			else:
-				if layer_i == vision_mlp_start_layer_idx:
+				if layer_i == fast_vision_start_layer:
 					image_full_len = length_info['image_full_len']
 					image_concise_len = length_info['image_concise_len']
 					text_len = length_info['text_len']
@@ -208,8 +211,8 @@ class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
 					# q [image_concise, newline, text]
 					# key&value [image_full, image_concise, newline, text]
 					for batch_i in range(bs):
-						cur_hidden_states_fast_q = torch.cat([image_concise_hidden_states[batch_i], newline_hidden_states[batch_i], text_hidden_states[batch_i]])
-						cur_hidden_states_fast_kv = torch.cat([image_full_hidden_states[batch_i],image_concise_hidden_states[batch_i], newline_hidden_states[batch_i], text_hidden_states[batch_i]])
+						cur_hidden_states_fast_q = torch.cat([image_concise_hidden_states[batch_i].flatten(0, 1), newline_hidden_states[batch_i], text_hidden_states[batch_i]])
+						cur_hidden_states_fast_kv = torch.cat([image_full_hidden_states[batch_i],image_concise_hidden_states[batch_i].flatten(0, 1), newline_hidden_states[batch_i], text_hidden_states[batch_i]])
 						if len(cur_hidden_states_fast_q) < position_ids_fast_q.shape[1]:
 							padding_len = position_ids_fast_q.shape[1] - len(cur_hidden_states_fast_q)
 							cur_hidden_states_fast_q = torch.cat([cur_hidden_states_fast_q, torch.zeros((padding_len, cur_hidden_states_fast_q.shape[-1]), device=cur_hidden_states_fast_q.device, dtype=cur_hidden_states_fast_q.dtype)])
@@ -233,6 +236,7 @@ class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
 						past_key_values,
 						output_attentions,
 						use_cache,
+						cache_position,
 						position_embeddings
 					)
 				else:
@@ -245,6 +249,7 @@ class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
 						past_key_values,
 						output_attentions,
 						use_cache,
+						cache_position,
 						position_embeddings
 					)
 
@@ -271,7 +276,7 @@ class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
 				image_full_hidden_states = torch.split(image_full_hidden_states, split_sizes)
 
 				for batch_i in range(bs):
-					hidden_states_fast_kv[batch_i][:image_full_len[batch_i]] = image_full_hidden_states[batch_i]
+					hidden_states_fast_kv[batch_i][:image_full_len[batch_i]] = image_full_hidden_states[batch_i].flatten(0, 1)
 					hidden_states_fast_kv[batch_i][image_full_len[batch_i]:image_full_len[batch_i]+image_concise_len[batch_i]+newline_len[batch_i]+text_len[batch_i]] = hidden_states_fast_q[batch_i][image_concise_len[batch_i]:image_concise_len[batch_i]+newline_len[batch_i]+text_len[batch_i]]
 
 				hidden_states = hidden_states_fast_q

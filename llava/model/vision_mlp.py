@@ -37,11 +37,11 @@ class VisionMLP(nn.Module):
 		return image_full
 	
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids_q, position_ids_k, unsqueeze_dim=1):
-	cos_q = cos[position_ids_q].unsqueeze(unsqueeze_dim)
-	sin_q = sin[position_ids_q].unsqueeze(unsqueeze_dim)
+	cos_q = cos[0][position_ids_q].unsqueeze(unsqueeze_dim)
+	sin_q = sin[0][position_ids_q].unsqueeze(unsqueeze_dim)
 	q_embed = (q * cos_q) + (rotate_half(q) * sin_q)
-	cos_k = cos[position_ids_k].unsqueeze(unsqueeze_dim)
-	sin_k = sin[position_ids_k].unsqueeze(unsqueeze_dim)
+	cos_k = cos[0][position_ids_k].unsqueeze(unsqueeze_dim)
+	sin_k = sin[0][position_ids_k].unsqueeze(unsqueeze_dim)
 	k_embed = (k * cos_k) + (rotate_half(k) * sin_k)
 	return q_embed, k_embed
 	
@@ -56,6 +56,7 @@ def LlamaSdpaAttention_forward(
 	past_key_value = None,
 	output_attentions = False,
 	use_cache = False,
+	cache_position = None,
 	position_embeddings = None
 ):
 
@@ -71,9 +72,17 @@ def LlamaSdpaAttention_forward(
 	value_states = value_states.view(bsz, kv_seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
 	if position_embeddings is None:
-		cos, sin = self.rotary_emb(value_states, torch.arange(position_ids_kv.shape[1], device=position_ids_kv.device, dtype=position_ids_kv.dtype).expand(position_ids_kv.shape[0], -1))
+		cos, sin = self.rotary_emb(value_states, torch.arange(position_ids_kv.shape[1], device=position_ids_kv.device, dtype=position_ids_kv.dtype).unsqueeze(0).expand(position_ids_kv.shape[0], -1))
 	else:
 		cos, sin = position_embeddings
+
+	# In case static cache is used, it is an instance attribute.
+	past_key_value = getattr(self, "past_key_value", past_key_value)
+
+	if past_key_value is not None:
+		# sin and cos are specific to RoPE models; cache_position needed for the static cache
+		cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+		key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
 	query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids_q, position_ids_kv)
 
@@ -115,19 +124,24 @@ LlamaSdpaAttention.forward = LlamaSdpaAttention_forward
 def decoder_forward(
 	self,
 	hidden_states,
-	kv_states,
+	kv_states=None,
 	attention_mask = None,
 	position_ids_q = None,
 	position_ids_kv = None,
 	past_key_value = None,
 	output_attentions = False,
 	use_cache = False,
+	cache_position = None,
 	position_embeddings = None,
 	**kwargs,):
 		residual = hidden_states
 
 		hidden_states = self.input_layernorm(hidden_states)
-		kv_states = self.input_layernorm(kv_states)
+		if kv_states is None:
+			kv_states = hidden_states
+			position_ids_kv = position_ids_q
+		else:
+			kv_states = self.input_layernorm(kv_states)
 
 		# Cross Attention
 		hidden_states, self_attn_weights, present_key_value = self.self_attn(
@@ -139,6 +153,7 @@ def decoder_forward(
 			past_key_value=past_key_value,
 			output_attentions=output_attentions,
 			use_cache=use_cache,
+			cache_position=cache_position,
 			position_embeddings=position_embeddings,
 			**kwargs,
 		)

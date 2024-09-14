@@ -276,7 +276,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
     rank0_print(f"Only save projectors: {check_only_save_mm_adapter_tunnable}")
     if check_only_save_mm_adapter_tunnable:
         # Only save Adapter
-        keys_to_match = ["mm_projector", "vision_resampler", 'vision_mlp_layers']
+        keys_to_match = ["mm_projector", "vision_resampler", 'vision_mlp_layers', 'image_newline']
         if getattr(trainer.args, "use_im_start_end", False):
             keys_to_match.extend(["embed_tokens", "embed_in"])
 
@@ -1639,6 +1639,7 @@ def train(attn_implementation=None):
             if model_args.tune_mm_mlp_adapter:
                 for p in model.get_model().mm_projector.parameters():
                     p.requires_grad = True
+                model.get_model().image_newline.requires_grad = True
             if model_args.tune_mm_vision_resampler:
                 for p in model.get_model().vision_resampler.parameters():
                     p.requires_grad = True
@@ -1678,6 +1679,7 @@ def train(attn_implementation=None):
             if "mm_mlp_adapter" in tunable_parts:
                 for p in model.get_model().mm_projector.parameters():
                     p.requires_grad = True
+                model.get_model().image_newline.requires_grad = True
             if "mm_vision_resampler" in tunable_parts:
                 for p in model.get_model().vision_resampler.parameters():
                     p.requires_grad = True
