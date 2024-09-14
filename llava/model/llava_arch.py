@@ -24,7 +24,7 @@ import torch.nn as nn
 from .multimodal_encoder.builder import build_vision_tower
 from .multimodal_resampler.builder import build_vision_resampler
 from .multimodal_projector.builder import build_vision_projector
-from .vision_mlp import build_vision_mlp_layers
+from .vision_mlp import VisionMLP
 
 from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
@@ -43,7 +43,9 @@ class LlavaMetaModel:
 			self.vision_tower = build_vision_tower(config, delay_load=delay_load)
 			self.vision_resampler = build_vision_resampler(config, vision_tower=self.vision_tower)
 			self.mm_projector = build_vision_projector(config, vision_cfg=self.vision_tower.config)
-			self.vision_mlp_layers = build_vision_mlp_layers(config)
+			self.vision_mlp_layers = nn.ModuleList(
+                    [VisionMLP(config) for layer_idx in range(0, config.num_of_vision_mlp_layers)]
+                    )
 
 			if "unpad" in getattr(config, "mm_patch_merge_type", ""):
 				self.image_newline = nn.Parameter(torch.empty(config.hidden_size, dtype=self.dtype))
@@ -60,6 +62,8 @@ class LlavaMetaModel:
 		mm_vision_select_feature = model_args.mm_vision_select_feature
 		pretrain_mm_mlp_adapter = model_args.pretrain_mm_mlp_adapter
 		mm_patch_merge_type = model_args.mm_patch_merge_type
+		fast_vision = model_args.fast_vision
+		fast_vision_start_layer = model_args.fast_vision_start_layer
 
 		self.config.mm_vision_tower = vision_tower
 		self.config.vision_tower_pretrained = getattr(model_args, "vision_tower_pretrained", "")
@@ -95,6 +99,7 @@ class LlavaMetaModel:
 		self.config.mm_vision_select_layer = mm_vision_select_layer
 		self.config.mm_vision_select_feature = mm_vision_select_feature
 		self.config.mm_patch_merge_type = mm_patch_merge_type
+		self.config.image_token_len_per_side = vision_tower.num_patches_per_side
 
 		if not hasattr(self.config, 'add_faster_video'):
 			if model_args.add_faster_video:
@@ -105,7 +110,12 @@ class LlavaMetaModel:
 
 		if getattr(self, "mm_projector", None) is None:
 			self.mm_projector = build_vision_projector(self.config, vision_cfg=vision_tower.config)
-			self.vision_mlp_layers = build_vision_mlp_layers(config)
+			if fast_vision:
+				num_of_vision_mlp_layers = self.config.num_hidden_layers - fast_vision_start_layer
+				self.config.num_of_vision_mlp_layers = num_of_vision_mlp_layers
+				self.vision_mlp_layers = nn.ModuleList(
+                    [VisionMLP(self.config) for layer_idx in range(0, num_of_vision_mlp_layers)]
+                    )
 
 			if "unpad" in mm_patch_merge_type:
 				embed_std = 1 / torch.sqrt(torch.tensor(self.config.hidden_size, dtype=self.dtype))
@@ -125,6 +135,9 @@ class LlavaMetaModel:
 			rank0_print(f"Loaded mm projector weights from {pretrain_mm_mlp_adapter}. Incompatible keys: {incompatible_keys}")
 			incompatible_keys = self.vision_resampler.load_state_dict(get_w(mm_projector_weights, "vision_resampler"), strict=False)
 			rank0_print(f"Loaded vision resampler weights from {pretrain_mm_mlp_adapter}. Incompatible keys: {incompatible_keys}")
+			if fast_vision:
+				incompatible_keys = self.vision_mlp_layers.load_state_dict(get_w(mm_projector_weights, "vision_mlp_layers"), strict=False)
+				rank0_print(f"Loaded vision resampler weights from {pretrain_mm_mlp_adapter}. Incompatible keys: {incompatible_keys}")
 
 
 def unpad_image(tensor, original_size):
@@ -308,7 +321,6 @@ class LlavaMetaForCausalLM(ABC):
 
 		else:
 			if image_feature.shape[0] > 1:
-				assert image_aspect_ratio == "anyres"
 				base_image_feature = image_feature[0]
 				image_feature = image_feature[1:]
 				assert height * width == base_image_feature.shape[0]
@@ -327,7 +339,8 @@ class LlavaMetaForCausalLM(ABC):
 				newline_feature = self.model.image_newline[None, None, :].repeat(num_patch_height * num_patch_width, 1, 1)
 
 				attention_masks_image_full_withnewline = torch.ones((num_patch_height * num_patch_width, height * width+1, 1), device=image_feature.device, dtype=torch.bool)
-				position_ids_image_full_withnewline = attention_masks_image_full_withnewline.cumsum(0)-1
+				position_ids_image_full_withnewline = attention_masks_image_full_withnewline.flatten(0,1).cumsum(0)-1
+				position_ids_image_full_withnewline = position_ids_image_full_withnewline.view(num_patch_height * num_patch_width, height * width+1, 1)
 
 				attention_masks_image_full = attention_masks_image_full_withnewline[:, :-1].flatten(0,1)
 				attention_masks_newline = attention_masks_image_full_withnewline[:, -1:].flatten(0,1)
@@ -370,9 +383,6 @@ class LlavaMetaForCausalLM(ABC):
 		if vision_tower is None or images is None or input_ids.shape[1] == 1:
 			return input_ids, position_ids, attention_mask, past_key_values, None, labels
 		
-		image_newline_types = None
-		image_feature_sizes = []
-
 		assert type(images) is list or images.ndim == 5
 
 		if type(images) is list:
@@ -545,7 +555,7 @@ class LlavaMetaForCausalLM(ABC):
 
 
 			input_embeds_image_full.append(torch.cat(cur_input_embeds_image_full))
-			input_embeds_newline.append(torch.cat(cur_input_embeds_image_full))
+			input_embeds_newline.append(torch.cat(cur_input_embeds_newline))
 
 			attention_masks_image_full.append(torch.cat(cur_attention_masks_image_full))
 			attention_masks_image_concise.append(torch.cat(cur_attention_masks_image_concise))
@@ -556,8 +566,6 @@ class LlavaMetaForCausalLM(ABC):
 			position_ids_image_concise.append(torch.cat(cur_position_ids_image_concise))
 			position_ids_newline.append(torch.cat(cur_position_ids_newline))
 
-		# Truncate sequences to max length as image embeddings can make the sequence longer
-		tokenizer_model_max_length = getattr(self.config, "tokenizer_model_max_length", None)
 		
 		for batch_idx in range(len(input_ids)):
 			image_newline_seq_len = len(input_embeds_image_full[batch_idx]) + len(input_embeds_newline[batch_idx])
@@ -567,6 +575,7 @@ class LlavaMetaForCausalLM(ABC):
 			input_embeds_text[batch_idx] = input_embeds_text[batch_idx][:text_max_len]
 			attention_masks_text[batch_idx] = attention_masks_text[batch_idx][:text_max_len]
 			position_ids_text[batch_idx] = position_ids_text[batch_idx][:text_max_len]
+			labels_text[batch_idx] = labels_text[batch_idx][:text_max_len]
 
 		assert getattr(self.config, "tokenizer_padding_side", "right") == "left"
 
@@ -576,7 +585,6 @@ class LlavaMetaForCausalLM(ABC):
 		newline_len = [len(input_embeds_newline[batch_idx]) for batch_idx in range(len(input_ids))]
 
 		length_info = {'image_full_len':image_full_len, 'image_concise_len':image_concise_len, 'text_len':text_len, 'newline_len':newline_len}
-
 
 		input_embeds_regular_all = []
 		attention_masks_regular_all = []
@@ -594,8 +602,8 @@ class LlavaMetaForCausalLM(ABC):
 			cur_position_ids_regular_all = torch.cat([position_ids_image_full[batch_idx], position_ids_newline[batch_idx], position_ids_text[batch_idx]])
 			cur_labels_regular_all = torch.cat([torch.full((image_full_len[batch_idx]+newline_len[batch_idx]), IGNORE_INDEX, device=self.device, dtype=torch.long), labels_text[batch_idx]])
 
-			if image_full_len[batch_idx]+text_len[batch_idx]+newline_len[batch_idx] < regular_max_seq:
-				padding_len = regular_max_seq - (image_full_len[batch_idx]+text_len[batch_idx]+newline_len[batch_idx])
+			if len(cur_input_embeds_regular_all) < regular_max_seq:
+				padding_len = regular_max_seq - len(cur_input_embeds_regular_all)
 				cur_input_embeds_regular_all = torch.cat([cur_input_embeds_regular_all, torch.zeros((padding_len, cur_input_embeds_regular_all.shape[-1]), device=self.device, dtype=cur_input_embeds_regular_all.dtype)])
 				cur_attention_masks_regular_all = torch.cat([cur_attention_masks_regular_all, torch.zeros((padding_len, 1), device=self.device, dtype=torch.bool)])
 				cur_position_ids_regular_all = torch.cat([cur_position_ids_regular_all, torch.zeros((padding_len, 1), device=self.device, dtype=torch.long)])

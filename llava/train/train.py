@@ -108,10 +108,15 @@ class ModelArguments:
     pos_skipping_range: Optional[int] = field(default=4096)
 
 
-    mm_newline_position: Optional[str] = field(default="grid")
+    mm_newline_position: Optional[str] = field(default="one_token")
     delay_load: Optional[bool] = field(default=True)
     add_faster_video: Optional[bool] = field(default=False)
     faster_token_stride: Optional[int] = field(default=10)
+
+    fast_vision: Optional[bool] = field(default=False)
+    fast_vision_start_layer: Optional[int] = field(default=0)
+    concise_reduce_factor: Optional[int] = field(default=4)
+    tune_mm_vision_mlp: Optional[bool] = field(default=False)
 
 
 
@@ -157,6 +162,7 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_bias: str = "none"
     mm_projector_lr: Optional[float] = None
     mm_vision_tower_lr: Optional[float] = None
+    mm_vision_mlp_lr: Optional[float] = None
     group_by_varlen: bool = field(default=False)
     group_by_modality_length: bool = field(default=False)
     group_by_modality_length_auto: bool = field(default=False)
@@ -260,7 +266,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
     if hasattr(trainer.args, "tune_mm_mlp_adapter") and trainer.args.tune_mm_mlp_adapter:
         check_only_save_mm_adapter_tunnable = True
     # only has mm_mlp_adapter and mm_vision_resampler in the tuneable parts
-    elif hasattr(trainer.args, "mm_tunable_parts") and (len(trainer.args.mm_tunable_parts.split(",")) == 1 and ("mm_mlp_adapter" in trainer.args.mm_tunable_parts or "mm_vision_resampler" in trainer.args.mm_tunable_parts)):
+    elif hasattr(trainer.args, "mm_tunable_parts") and ("mm_language_model" not in trainer.args.mm_tunable_parts)  and ("mm_mlp_adapter" in trainer.args.mm_tunable_parts or "mm_vision_resampler" in trainer.args.mm_tunable_parts or "mm_vision_mlp" in trainer.args.mm_tunable_parts):
         check_only_save_mm_adapter_tunnable = True
     else:
         check_only_save_mm_adapter_tunnable = False
@@ -270,7 +276,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
     rank0_print(f"Only save projectors: {check_only_save_mm_adapter_tunnable}")
     if check_only_save_mm_adapter_tunnable:
         # Only save Adapter
-        keys_to_match = ["mm_projector", "vision_resampler"]
+        keys_to_match = ["mm_projector", "vision_resampler", 'vision_mlp_layers']
         if getattr(trainer.args, "use_im_start_end", False):
             keys_to_match.extend(["embed_tokens", "embed_in"])
 
@@ -1620,11 +1626,14 @@ def train(attn_implementation=None):
         model.config.add_time_instruction = data_args.add_time_instruction
         model.config.force_sample = data_args.force_sample
         model.config.mm_spatial_pool_stride = model_args.mm_spatial_pool_stride 
-
+        model.config.fast_vision = model_args.fast_vision
+        model.config.fast_vision_start_layer = model_args.fast_vision_start_layer
+        model.config.concise_reduce_factor = model_args.concise_reduce_factor
         ### Deciding train which part of the model
         if model_args.mm_tunable_parts is None:  # traditional way of deciding which part to train
             model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
             model.config.tune_mm_vision_resampler = training_args.tune_mm_vision_resampler = model_args.tune_mm_vision_resampler
+            model.config.tune_mm_vision_mlp = training_args.tune_mm_vision_mlp = model_args.tune_mm_vision_mlp
             if model_args.tune_mm_mlp_adapter or model_args.tune_mm_vision_resampler:
                 model.requires_grad_(False)
             if model_args.tune_mm_mlp_adapter:
@@ -1632,6 +1641,9 @@ def train(attn_implementation=None):
                     p.requires_grad = True
             if model_args.tune_mm_vision_resampler:
                 for p in model.get_model().vision_resampler.parameters():
+                    p.requires_grad = True
+            if model_args.tune_mm_vision_mlp:
+                for p in model.get_model().vision_mlp_layers.parameters():
                     p.requires_grad = True
 
             model.config.freeze_mm_mlp_adapter = training_args.freeze_mm_mlp_adapter
@@ -1658,6 +1670,9 @@ def train(attn_implementation=None):
             vision_tower.requires_grad_(False)
             model.get_model().mm_projector.requires_grad_(False)
             model.get_model().vision_resampler.requires_grad_(False)
+            if model_args.fast_vision:
+                model.get_model().vision_mlp_layers.requires_grad_(False)
+            model.get_model().vision_resampler.requires_grad_(False)
             # Parse the mm_tunable_parts to decide which parts to unfreeze
             tunable_parts = model_args.mm_tunable_parts.split(",")
             if "mm_mlp_adapter" in tunable_parts:
@@ -1666,13 +1681,16 @@ def train(attn_implementation=None):
             if "mm_vision_resampler" in tunable_parts:
                 for p in model.get_model().vision_resampler.parameters():
                     p.requires_grad = True
+            if "mm_vision_mlp" in tunable_parts:
+                for p in model.get_model().vision_mlp_layers.parameters():
+                    p.requires_grad = True
             if "mm_vision_tower" in tunable_parts:
                 for name, param in model.named_parameters():
                     if "vision_tower" in name:
                         param.requires_grad_(True)
             if "mm_language_model" in tunable_parts:
                 for name, param in model.named_parameters():
-                    if "vision_tower" not in name and "mm_projector" not in name and "vision_resampler" not in name:
+                    if "vision_tower" not in name and "mm_projector" not in name and "vision_resampler" not in name and "vision_mlp_layers" not in name:
                         param.requires_grad_(True)
 
         total_params = sum(p.ds_numel if hasattr(p, "ds_numel") else p.numel() for p in model.parameters())
@@ -1685,6 +1703,7 @@ def train(attn_implementation=None):
         model.config.mm_use_im_start_end = data_args.mm_use_im_start_end = model_args.mm_use_im_start_end
         model.config.mm_projector_lr = training_args.mm_projector_lr
         model.config.mm_vision_tower_lr = training_args.mm_vision_tower_lr
+        model.config.mm_vision_mlp_lr = training_args.mm_vision_mlp_lr
         training_args.use_im_start_end = model_args.mm_use_im_start_end
         model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)

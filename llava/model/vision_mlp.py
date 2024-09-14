@@ -7,8 +7,9 @@ import torch.nn.functional as F
 
 from transformers.models.llama.modeling_llama import LlamaSdpaAttention, LlamaDecoderLayer, LlamaRMSNorm, rotate_half, repeat_kv
 class VisionMLP(nn.Module):
-	def __init__(self, config, intermediate_size=1024):
+	def __init__(self, config):
 		super().__init__()
+		intermediate_size = config.hidden_size // 4
 		self.context_proj = nn.Linear(config.hidden_size, intermediate_size, bias=False)
 		self.input_proj = nn.Linear(config.hidden_size, intermediate_size, bias=False)
 		self.proj = nn.Sequential(
@@ -23,17 +24,17 @@ class VisionMLP(nn.Module):
 		reduce_factor = side_len_full//side_len_concise
 
 		image_full = image_full.view(bs, side_len_concise, side_len_concise, -1)
-		context = context.view(bs, side_len_concise, side_len_concise, -1)
-		context = context.repeat_interleave(reduce_factor, 1).repeat_interleave(reduce_factor, 2)
-		context = self.context_proj(context)
-		residual = input_embed
-		input_embed = self.input_proj(input_embed)
-		input_embed = torch.cat([input_embed, context], -1)
-		input_embed = self.layernorm_post(self.proj(input_embed) + residual) 
+		image_concise = image_concise.view(bs, side_len_concise, side_len_concise, -1)
+		image_concise = image_concise.repeat_interleave(reduce_factor, 1).repeat_interleave(reduce_factor, 2)
+		image_concise = self.context_proj(image_concise)
+		residual = image_full
+		image_full = self.input_proj(image_full)
+		image_full = torch.cat([image_full, image_concise], -1)
+		image_full = self.layernorm_post(self.proj(image_full) + residual) 
 
-		input_embed = input_embed.flatten(1,2)
+		image_full = image_full.flatten(1,2)
 
-		return input_embed
+		return image_full
 	
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids_q, position_ids_k, unsqueeze_dim=1):
 	cos_q = cos[position_ids_q].unsqueeze(unsqueeze_dim)

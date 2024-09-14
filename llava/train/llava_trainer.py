@@ -371,6 +371,8 @@ class LLaVATrainer(Trainer):
             lr_mapper = {}
             if self.args.mm_projector_lr is not None:
                 lr_mapper["mm_projector"] = self.args.mm_projector_lr
+            if self.args.mm_vision_mlp_lr is not None:
+                lr_mapper["vision_mlp_layers"] = self.args.mm_vision_mlp_lr
             if self.args.mm_vision_tower_lr is not None:
                 lr_mapper["vision_tower"] = self.args.mm_vision_tower_lr
             if len(lr_mapper) > 0:
@@ -434,7 +436,7 @@ class LLaVATrainer(Trainer):
 
     def _save_checkpoint(self, model, trial, metrics=None):
         if getattr(self.args, "tune_mm_mlp_adapter", False) or (
-            hasattr(self.args, "mm_tunable_parts") and (len(self.args.mm_tunable_parts.split(",")) == 1 and ("mm_mlp_adapter" in self.args.mm_tunable_parts or "mm_vision_resampler" in self.args.mm_tunable_parts))
+            hasattr(self.args, "mm_tunable_parts") and ("mm_language_model" not in self.args.mm_tunable_parts)  and ("mm_mlp_adapter" in self.args.mm_tunable_parts or "mm_vision_resampler" in self.args.mm_tunable_parts or "mm_vision_mlp" in self.args.mm_tunable_parts)
         ):
             from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
@@ -444,7 +446,7 @@ class LLaVATrainer(Trainer):
             output_dir = os.path.join(run_dir, checkpoint_folder)
 
             # Only save Adapter
-            keys_to_match = ["mm_projector", "vision_resampler"]
+            keys_to_match = ["mm_projector", "vision_resampler", "vision_mlp_layers"]
             if getattr(self.args, "use_im_start_end", False):
                 keys_to_match.extend(["embed_tokens", "embed_in"])
 
@@ -482,7 +484,7 @@ class LLaVADPOTrainer(DPOTrainer):
 
     def _save_checkpoint(self, model, trial, metrics=None):
         if getattr(self.args, "tune_mm_mlp_adapter", False) or (
-            hasattr(self.args, "mm_tunable_parts") and (len(self.args.mm_tunable_parts.split(",")) == 1 and ("mm_mlp_adapter" in self.args.mm_tunable_parts or "mm_vision_resampler" in self.args.mm_tunable_parts))
+            hasattr(self.args, "mm_tunable_parts") and ("mm_language_model" not in self.args.mm_tunable_parts)  and ("mm_mlp_adapter" in self.args.mm_tunable_parts or "mm_vision_resampler" in self.args.mm_tunable_parts or "mm_vision_mlp" in self.args.mm_tunable_parts)
         ):
             from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
@@ -492,7 +494,7 @@ class LLaVADPOTrainer(DPOTrainer):
             output_dir = os.path.join(run_dir, checkpoint_folder)
 
             # Only save Adapter
-            keys_to_match = ["mm_projector", "vision_resampler"]
+            keys_to_match = ["mm_projector", "vision_resampler", "vision_mlp_layers"]
             if getattr(self.args, "use_im_start_end", False):
                 keys_to_match.extend(["embed_tokens", "embed_in"])
 

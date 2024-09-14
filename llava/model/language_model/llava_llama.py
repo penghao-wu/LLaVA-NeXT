@@ -201,7 +201,7 @@ class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
 						text_hidden_states.append(hidden_states[batch_i][image_full_len[batch_i]+newline_len[batch_i]:image_full_len[batch_i]+newline_len[batch_i]+text_len[batch_i]])
 						
 					concise_reduce_factor = self.config.concise_reduce_factor
-					image_concise_hidden_states = get_image_concise(image_full_hidden_states, concise_reduce_factor)
+					image_concise_hidden_states = get_image_concise(image_full_hidden_states, concise_reduce_factor, self.config.image_token_len_per_side**2)
 					
 					hidden_states_fast_q = []
 					hidden_states_fast_kv = []
@@ -253,9 +253,9 @@ class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
 				image_concise_hidden_states = []
 				image_full_hidden_states = []
 				split_sizes = []
-				h = w = 24
-				h_concise = 6
-				w_concise = 6
+				h = w = self.config.image_token_len_per_side
+				h_concise = h//concise_reduce_factor
+				w_concise = w//concise_reduce_factor
 				for batch_i in range(bs):
 					cur_image_concise_hidden_states = layer_outputs[0][batch_i][:image_concise_len[batch_i]]
 					image_num =  cur_image_concise_hidden_states.shape[0]//(h_concise*w_concise)
@@ -341,7 +341,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
 
 		if inputs_embeds is None:
 			(input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels, labels_fast, length_info, position_ids_fast_q, position_ids_fast_kv, attention_masks_fast_4d) = self.prepare_inputs_labels_for_multimodal(input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities, image_sizes)
-			labels = labels_fast
+			if self.get_model().config.fast_vision:
+				labels = labels_fast
 
 		# decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
 		outputs = self.model(
