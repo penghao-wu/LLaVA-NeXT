@@ -23,7 +23,7 @@ class VisionMLP(nn.Module):
 		bs = image_full.shape[0]
 		reduce_factor = side_len_full//side_len_concise
 
-		image_full = image_full.view(bs, side_len_concise, side_len_concise, -1)
+		image_full = image_full.view(bs, side_len_full, side_len_full, -1)
 		image_concise = image_concise.view(bs, side_len_concise, side_len_concise, -1)
 		image_concise = image_concise.repeat_interleave(reduce_factor, 1).repeat_interleave(reduce_factor, 2)
 		image_concise = self.context_proj(image_concise)
