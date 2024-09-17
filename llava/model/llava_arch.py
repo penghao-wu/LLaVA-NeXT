@@ -336,7 +336,7 @@ class LlavaMetaForCausalLM(ABC):
 					num_patch_width, num_patch_height = 2, 2
 				image_feature = image_feature.view(num_patch_height * num_patch_width * height * width, -1)
 
-				newline_feature = self.model.image_newline[None, None, :].repeat(num_patch_height * num_patch_width, 1, 1)
+				newline_feature = self.model.image_newline[None, :].repeat(num_patch_height * num_patch_width+1, 1)
 
 				attention_masks_image_full_withnewline = torch.ones((num_patch_height * num_patch_width, height * width+1, 1), device=image_feature.device, dtype=torch.bool)
 				position_ids_image_full_withnewline = attention_masks_image_full_withnewline.flatten(0,1).cumsum(0)-1
@@ -347,7 +347,16 @@ class LlavaMetaForCausalLM(ABC):
 				position_ids_image_full = position_ids_image_full_withnewline[:, :-1].flatten(0,1)
 				position_ids_newline = position_ids_image_full_withnewline[:, -1:].flatten(0,1)
 
-				attention_masks_image_concise = torch.ones((num_patch_height*num_patch_width*height_concise*width_concise, 1), device=image_feature.device, dtype=torch.bool)
+				# add base
+				attention_masks_image_full = torch.cat([torch.ones((height * width, 1), device=image_feature.device, dtype=torch.bool), attention_masks_image_full])
+				attention_masks_newline = torch.cat([torch.ones((1, 1), device=image_feature.device, dtype=torch.bool), attention_masks_newline])
+				position_ids_image_full = position_ids_image_full + height * width + 1
+				position_ids_image_full = torch.cat([torch.arange(height * width, device=image_feature.device, dtype=torch.long).view(-1,1), position_ids_image_full])
+				position_ids_newline = torch.cat([torch.full((1, 1), height * width, device=image_feature.device, dtype=torch.long), position_ids_newline])
+
+				image_feature = torch.cat([base_image_feature.view(height * width, -1), image_feature])
+
+				attention_masks_image_concise = torch.ones(((1+num_patch_height*num_patch_width)*height_concise*width_concise, 1), device=image_feature.device, dtype=torch.bool)
 				position_ids_image_concise = attention_masks_image_concise.cumsum(0)-1
 			
 			else:
@@ -649,7 +658,6 @@ class LlavaMetaForCausalLM(ABC):
 		attention_masks_regular_all = torch.stack(attention_masks_regular_all)
 		position_ids_regular_all = torch.stack(position_ids_regular_all)
 		labels_regular_all = torch.stack(labels_regular_all)
-
 		
 		attention_masks_regular_4d = calculate_causal_attention_mask(position_ids_regular_all, position_ids_regular_all, attention_masks_regular_all, dtype=input_embeds_regular_all.dtype)
 		# concise attention: q = [image_concise, newline, text]; kv = [image_full, image_concise, newline, text]
