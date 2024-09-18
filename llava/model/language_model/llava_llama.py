@@ -214,15 +214,9 @@ class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
 					text_hidden_states = []
 					newline_hidden_states = []
 
-
-					image_full_hidden_states = hidden_states[:, :image_full_len[0]]
+					image_full_hidden_states = hidden_states[:, :image_full_len[0]].contiguous()
 					newline_hidden_states = hidden_states[:, image_full_len[0]:image_full_len[0]+newline_len[0]]
 					text_hidden_states = hidden_states[:, image_full_len[0]+newline_len[0]:]
-
-					# for batch_i in range(bs):
-					# 	image_full_hidden_states.append(hidden_states[batch_i][:image_full_len[batch_i]])
-					# 	newline_hidden_states.append(hidden_states[batch_i][image_full_len[batch_i]:image_full_len[batch_i]+newline_len[batch_i]])
-					# 	text_hidden_states.append(hidden_states[batch_i][image_full_len[batch_i]+newline_len[batch_i]:image_full_len[batch_i]+newline_len[batch_i]+text_len[batch_i]])
 						
 					concise_reduce_factor = self.config.concise_reduce_factor
 					image_concise_hidden_states = get_image_concise(image_full_hidden_states, concise_reduce_factor, self.config.image_token_len_per_side**2)
@@ -231,19 +225,6 @@ class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
 					hidden_states_fast_kv = []
 					# q [image_concise, newline, text]
 					# key&value [image_full, image_concise, newline, text]
-					# for batch_i in range(bs):
-					# 	cur_hidden_states_fast_q = torch.cat([image_concise_hidden_states[batch_i].flatten(0, 1), newline_hidden_states[batch_i], text_hidden_states[batch_i]])
-					# 	cur_hidden_states_fast_kv = torch.cat([image_full_hidden_states[batch_i],image_concise_hidden_states[batch_i].flatten(0, 1), newline_hidden_states[batch_i], text_hidden_states[batch_i]])
-					# 	if len(cur_hidden_states_fast_q) < position_ids_fast_q.shape[1]:
-					# 		padding_len = position_ids_fast_q.shape[1] - len(cur_hidden_states_fast_q)
-					# 		cur_hidden_states_fast_q = torch.cat([cur_hidden_states_fast_q, torch.zeros((padding_len, cur_hidden_states_fast_q.shape[-1]), device=cur_hidden_states_fast_q.device, dtype=cur_hidden_states_fast_q.dtype)])
-					# 	if len(cur_hidden_states_fast_kv) < position_ids_fast_kv.shape[1]:
-					# 		padding_len = position_ids_fast_kv.shape[1] - len(cur_hidden_states_fast_kv)
-					# 		cur_hidden_states_fast_kv = torch.cat([cur_hidden_states_fast_kv, torch.zeros((padding_len, cur_hidden_states_fast_kv.shape[-1]), device=cur_hidden_states_fast_kv.device, dtype=cur_hidden_states_fast_kv.dtype)])
-					# 	hidden_states_fast_q.append(cur_hidden_states_fast_q)
-					# 	hidden_states_fast_kv.append(cur_hidden_states_fast_kv)
-					# hidden_states_fast_q = torch.stack(hidden_states_fast_q)
-					# hidden_states_fast_kv = torch.stack(hidden_states_fast_kv)
 
 					hidden_states_fast_q = torch.cat([image_concise_hidden_states, newline_hidden_states, text_hidden_states], 1)
 					hidden_states_fast_kv = torch.cat([image_full_hidden_states, image_concise_hidden_states, newline_hidden_states, text_hidden_states], 1)
@@ -279,38 +260,15 @@ class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
 
 				hidden_states_fast_q = layer_outputs[0]
 
-				# image_concise_hidden_states = []
-				# split_sizes = []
 				h = w = self.config.image_token_len_per_side
 				h_concise = h//concise_reduce_factor
 				w_concise = w//concise_reduce_factor
-				# for batch_i in range(bs):
-				# 	cur_image_concise_hidden_states = hidden_states_fast_q[batch_i][:image_concise_len[batch_i]]
-				# 	image_num =  cur_image_concise_hidden_states.shape[0]//(h_concise*w_concise)
-				# 	split_sizes.append(image_num)
 
-				# 	image_concise_hidden_states.append(cur_image_concise_hidden_states.view(image_num, h_concise , w_concise, -1))
-				# 	image_full_hidden_states[batch_i] = image_full_hidden_states[batch_i].view(image_num, h , w, -1)
-
-				# image_concise_hidden_states = torch.cat(image_concise_hidden_states)
-				# image_full_hidden_states = torch.cat(image_full_hidden_states)
-
-				image_concise_hidden_states = hidden_states_fast_q[:, :image_concise_len[0]]
+				image_concise_hidden_states = hidden_states_fast_q[:, :image_concise_len[0]].contiguous()
 				newline_hidden_states = hidden_states_fast_q[:, image_concise_len[0]:image_concise_len[0]+newline_len[0]]
 				text_hidden_states = hidden_states_fast_q[:, image_concise_len[0]+newline_len[0]:]
 
 				image_full_hidden_states = self.vision_mlp_layers[layer_i-fast_vision_start_layer](image_full_hidden_states, image_concise_hidden_states, h, h_concise)
-				# image_full_hidden_states = torch.split(image_full_hidden_states, split_sizes)
-				# image_full_hidden_states = [_ for _ in image_full_hidden_states]
-
-				
-
-				# hidden_states_fast_kv_update = []
-				# for batch_i in range(bs):
-				# 	hidden_states_fast_kv_update.append(torch.cat([image_full_hidden_states[batch_i].flatten(0, 1), hidden_states_fast_q[batch_i][:image_concise_len[batch_i]+newline_len[batch_i]+text_len[batch_i]], hidden_states_fast_kv[batch_i][image_full_len[batch_i]+image_concise_len[batch_i]+newline_len[batch_i]+text_len[batch_i]:]]))
-				# 	# hidden_states_fast_kv[batch_i][:image_full_len[batch_i]] = image_full_hidden_states[batch_i].flatten(0, 1)
-				# 	# hidden_states_fast_kv[batch_i][image_full_len[batch_i]:image_full_len[batch_i]+image_concise_len[batch_i]+newline_len[batch_i]+text_len[batch_i]] = hidden_states_fast_q[batch_i][:image_concise_len[batch_i]+newline_len[batch_i]+text_len[batch_i]]
-				# hidden_states_fast_kv = torch.stack(hidden_states_fast_kv_update)
 
 				hidden_states_fast_q = torch.cat([image_concise_hidden_states, newline_hidden_states, text_hidden_states], 1)
 				hidden_states_fast_kv = torch.cat([image_full_hidden_states, image_concise_hidden_states, newline_hidden_states, text_hidden_states], 1)

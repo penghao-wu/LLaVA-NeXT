@@ -115,6 +115,8 @@ class ModelArguments:
 
     fast_vision: Optional[bool] = field(default=False)
     fast_vision_start_layer: Optional[int] = field(default=0)
+    max_num_image_crops: Optional[int] = field(default=1)
+    per_crop_token_len: Optional[int] = field(default=576)
     concise_reduce_factor: Optional[int] = field(default=4)
     tune_mm_vision_mlp: Optional[bool] = field(default=False)
 
@@ -963,6 +965,7 @@ class LazySupervisedDataset(Dataset):
         super(LazySupervisedDataset, self).__init__()
         self.tokenizer = tokenizer
         self.list_data_dict = []
+        self.data_args = data_args
 
         # Handle multiple JSON files specified in the data_path
         if "{" in data_path and "}" in data_path:
@@ -1227,14 +1230,20 @@ class LazySupervisedDataset(Dataset):
 
 
         # check whether image tokens will be truncated, if so, discard this sample
-        if "image" in self.list_data_dict[i] or "video" in self.list_data_dict[i]:
-            image_crops_num = sum([len(image_i[0]) for image_i in image])
-            per_crop_token_len = 576
-            image_token_num = image_crops_num*(per_crop_token_len+1)
+        if "image" in self.list_data_dict[i] or "video" in self.list_data_dict[i] or self.data_args.is_multimodal:    
+            max_num_image_crops = self.data_args.max_num_image_crops
+            per_crop_token_len = self.data_args.per_crop_token_len
             num_images = (data_dict['input_ids'] == IMAGE_TOKEN_INDEX).sum()
-            last_image_token_index = torch.where(data_dict['input_ids'] == IMAGE_TOKEN_INDEX)[0].tolist()[-1]
-    
-            if last_image_token_index+image_token_num-(num_images-1) >= self.tokenizer.model_max_length-1:
+            if num_images == 0:
+                # dummy image
+                last_token_index = 0 
+                pre_text_token_num = 0
+            else:
+                last_image_token_index = torch.where(data_dict['input_ids'] == IMAGE_TOKEN_INDEX)[0].tolist()[-1]
+                pre_text_token_num = (last_image_token_index+1) - num_images
+
+            if pre_text_token_num + (max_num_image_crops*(per_crop_token_len+1)) >= self.tokenizer.model_max_length-1:
+                print("Skip this sample as its image tokens padded get truncated")
                 return self._get_item(i + 1)
             
 
@@ -1703,6 +1712,8 @@ def train(attn_implementation=None):
             model.get_model().mm_projector.to(dtype=compute_dtype, device=training_args.device)
 
         model.config.mm_use_im_start_end = data_args.mm_use_im_start_end = model_args.mm_use_im_start_end
+        model.config.max_num_image_crops = data_args.max_num_image_crops = model_args.max_num_image_crops
+        model.config.per_crop_token_len = data_args.per_crop_token_len = model_args.per_crop_token_len
         model.config.mm_projector_lr = training_args.mm_projector_lr
         model.config.mm_vision_tower_lr = training_args.mm_vision_tower_lr
         model.config.mm_vision_mlp_lr = training_args.mm_vision_mlp_lr
@@ -1751,6 +1762,10 @@ def train(attn_implementation=None):
 
     rank0_print(f"Model saved to {training_args.output_dir}")
 
+
+# Penghao's wandb
+import wandb
+wandb.login(key='618eb3b78242f01000855a123d29e2ac98a60f30')
 
 if __name__ == "__main__":
     train()
