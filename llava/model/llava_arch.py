@@ -583,7 +583,7 @@ class LlavaMetaForCausalLM(ABC):
 				cur_position_ids_text.append(torch.arange(0, cur_input_embeds_no_im[i].shape[0], dtype=torch.long, device=self.device).view(-1, 1)+cur_seq_len)
 				if cur_labels_noim[i].shape[0] == 1:
 					cur_labels_text.append(torch.full((1, ), IGNORE_INDEX, device=self.device, dtype=torch.long))
-				else:
+				elif cur_labels_noim[i].shape[0] > 1:
 					cur_labels_text.append(torch.cat([cur_labels_noim[i][1:], torch.full((1, ), IGNORE_INDEX, device=self.device, dtype=torch.long)]))
 				cur_seq_len += cur_input_embeds_no_im[i].shape[0]
 				if i < num_images:
