@@ -13,7 +13,7 @@ NUM_GPUS=2
 NNODES=1
 RANK=0
 ADDR="127.0.0.1"
-PORT=29500
+PORT=29600
 
 ############### Pretrain ################
 
@@ -22,10 +22,10 @@ IMAGE_FOLDER="/mnt/sfs-common/krhu/penghao_workspace/data/llava_next"
 
 PROMPT_VERSION="qwen_1_5"
 
-BASE_RUN_NAME="llava15-fast-layer12-openai_clip-vit-large-patch14-336-Qwen_Qwen2-0.5B-Instruct-mlp2x_gelu-pretrain_558k_plain_bs256"
+BASE_RUN_NAME="llava15-fast-layer8-dim896-openai_clip-vit-large-patch14-336-Qwen_Qwen2-0.5B-Instruct-mlp2x_gelu-pretrain_558k_plain_bs256"
 echo "BASE_RUN_NAME: ${BASE_RUN_NAME}"
 
-MID_RUN_NAME="llava15-fast-layer12-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-mlp2x_gelu-sharegpt4vpt-finetune"
+MID_RUN_NAME="llava15-fast-layer8-dim896-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-mlp2x_gelu-sharegpt4vpt-finetune"
 echo "MID_RUN_NAME: ${MID_RUN_NAME}"
 
 ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --nnodes="${NNODES}" --node_rank="${RANK}" --master_addr="${ADDR}" --master_port="${PORT}" \
@@ -42,7 +42,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --nnodes="${NN
     --mm_projector_type mlp2x_gelu \
     --mm_vision_select_layer -2 \
     --fast_vision True \
-    --fast_vision_start_layer 12 \
+    --fast_vision_start_layer 8 \
     --concise_reduce_factor 4 \
     --mm_use_im_start_end False \
     --mm_use_im_patch_token False \

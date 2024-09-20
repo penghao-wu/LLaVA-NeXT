@@ -10,6 +10,8 @@ class VisionMLP(nn.Module):
 	def __init__(self, config):
 		super().__init__()
 		intermediate_size = config.hidden_size // 4
+		if intermediate_size < 1024:
+			intermediate_size = config.hidden_size
 		self.context_proj = nn.Linear(config.hidden_size, intermediate_size, bias=False)
 		self.input_proj = nn.Linear(config.hidden_size, intermediate_size, bias=False)
 		self.proj = nn.Sequential(
