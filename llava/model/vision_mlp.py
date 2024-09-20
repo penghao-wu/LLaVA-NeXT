@@ -26,8 +26,8 @@ class VisionMLP(nn.Module):
 
 		image_full = image_full.view(bs*num_image_crops, side_len_full, side_len_full, -1)
 		image_concise = image_concise.view(bs*num_image_crops, side_len_concise, side_len_concise, -1)
-		image_concise = image_concise.repeat_interleave(reduce_factor, 1).repeat_interleave(reduce_factor, 2)
 		image_concise = self.context_proj(image_concise)
+		image_concise = image_concise.repeat_interleave(reduce_factor, 1).repeat_interleave(reduce_factor, 2)
 		residual = image_full
 		image_full = self.input_proj(image_full)
 		image_full = torch.cat([image_full, image_concise], -1)
