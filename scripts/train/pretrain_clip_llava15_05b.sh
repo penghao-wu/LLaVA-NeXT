@@ -9,16 +9,17 @@ LLM_VERSION_CLEAN="${LLM_VERSION//\//_}"
 VISION_MODEL_VERSION="openai/clip-vit-large-patch14-336"
 VISION_MODEL_VERSION_CLEAN="${VISION_MODEL_VERSION//\//_}"
 
-DATA_PATH="/mnt/sfs-common/krhu/penghao_workspace/data/jsons/share-captioner_coco_lcs_sam_1246k_1107.json"
-IMAGE_FOLDER="/mnt/sfs-common/krhu/penghao_workspace/data"
+DATA_PATH="/mnt/bn/vl-research/data/llava_data/sharegpt4v_pretrain/share-captioner_coco_lcs_sam_1246k_1107.json"
+IMAGE_FOLDER="/mnt/bn/vl-research/data/llava_data/sharegpt4v_pretrain/"
 
-NUM_GPUS=2
+NUM_GPUS=8
 NNODES=1
 RANK=0
 ADDR="127.0.0.1"
 PORT=29500
 
-
+cd /mnt/bn/vl-research/workspace/boli01/projects/llava_next_s2
+pip install -e ".[train]"
 ############### Pretrain ################
 
 PROMPT_VERSION=plain
