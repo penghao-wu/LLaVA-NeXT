@@ -113,11 +113,11 @@ class ModelArguments:
     add_faster_video: Optional[bool] = field(default=False)
     faster_token_stride: Optional[int] = field(default=10)
 
-    fast_vision: Optional[bool] = field(default=False)
-    fast_vision_start_layer: Optional[int] = field(default=0)
+    compress_v: Optional[bool] = field(default=False)
+    compress_v_start_layer: Optional[int] = field(default=0)
     max_num_image_crops: Optional[int] = field(default=1)
     per_crop_token_len: Optional[int] = field(default=576)
-    concise_reduce_factor: Optional[int] = field(default=4)
+    compress_reduce_factor: Optional[int] = field(default=4)
     tune_mm_vision_mlp: Optional[bool] = field(default=False)
 
 
@@ -1561,6 +1561,8 @@ def train(attn_implementation=None):
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_args.model_name_or_path, cache_dir=training_args.cache_dir, model_max_length=training_args.model_max_length, padding_side="left")
     elif "qwen" in model_args.model_name_or_path.lower():
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_args.model_name_or_path, cache_dir=training_args.cache_dir, model_max_length=training_args.model_max_length, padding_side="right")
+
+        tokenizer = transformers.AutoTokenizer.from_pretrained("Qwen/Qwen2-0.5B-Instruct", model_max_length=2048, padding_side="right")
     elif (
         "wizardlm-2" in model_args.model_name_or_path.lower()
         or "vicuna" in model_args.model_name_or_path.lower()
@@ -1635,9 +1637,6 @@ def train(attn_implementation=None):
         model.config.add_time_instruction = data_args.add_time_instruction
         model.config.force_sample = data_args.force_sample
         model.config.mm_spatial_pool_stride = model_args.mm_spatial_pool_stride 
-        model.config.fast_vision = model_args.fast_vision
-        model.config.fast_vision_start_layer = model_args.fast_vision_start_layer
-        model.config.concise_reduce_factor = model_args.concise_reduce_factor
         ### Deciding train which part of the model
         if model_args.mm_tunable_parts is None:  # traditional way of deciding which part to train
             model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
@@ -1680,7 +1679,7 @@ def train(attn_implementation=None):
             vision_tower.requires_grad_(False)
             model.get_model().mm_projector.requires_grad_(False)
             model.get_model().vision_resampler.requires_grad_(False)
-            if model_args.fast_vision:
+            if model_args.compress_v:
                 model.get_model().vision_mlp_layers.requires_grad_(False)
             model.get_model().vision_resampler.requires_grad_(False)
             # Parse the mm_tunable_parts to decide which parts to unfreeze

@@ -22,7 +22,7 @@ PORT=29500
 
 PROMPT_VERSION=plain
 
-BASE_RUN_NAME="compressv-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-mlp2x_gelu-pretrain_sharegpt4v_bs512"
+BASE_RUN_NAME="llava15-fast-layer12-dim896-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-mlp2x_gelu-pretrain_sharegpt4v_plain_bs512"
 echo "BASE_RUN_NAME: ${BASE_RUN_NAME}"
 HF_MODEL_ID="llava15-pretrain"
 
@@ -34,8 +34,12 @@ ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --nnodes="${NN
     --data_path ${DATA_PATH} \
     --image_folder ${IMAGE_FOLDER} \
     --vision_tower ${VISION_MODEL_VERSION} \
-    --mm_tunable_parts="mm_mlp_adapter" \
+    --mm_tunable_parts="mm_mlp_adapter,mm_vision_mlp" \
+    --mm_vision_mlp_lr 1e-4 \
     --mm_vision_select_layer -2 \
+    --fast_vision True \
+    --fast_vision_start_layer 12 \
+    --concise_reduce_factor 4 \
     --max_num_image_crops 1 \
     --per_crop_token_len 576 \
     --mm_projector_type mlp2x_gelu \

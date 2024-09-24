@@ -39,22 +39,25 @@ from transformers import Qwen2Config, Qwen2Model, Qwen2ForCausalLM
 # from .qwen.modeling_qwen import QWenLMHeadModel, QWenModel
 # from .qwen.configuration_qwen import QWenConfig
 
-def get_image_concise(image_full_hidden_states, concise_reduce_factor, single_crop_len=576):
-	bs = image_full_hidden_states.shape[0]
-	num_image_crops = image_full_hidden_states.shape[1]//single_crop_len
-	h_full = w_full = int(single_crop_len**0.5)
-	h_concise = w_concise = h_full//concise_reduce_factor
+import os
 
-	image_full_hidden_states = image_full_hidden_states.view(bs*num_image_crops, h_full, w_full, -1)
+
+def get_image_compress(hidden_states_image_full, compress_reduce_factor, single_crop_len=576):
+	bs = hidden_states_image_full.shape[0]
+	num_image_crops = hidden_states_image_full.shape[1]//single_crop_len
+	h_full = w_full = int(single_crop_len**0.5)
+	h_compress = w_compress = h_full//compress_reduce_factor
+
+	hidden_states_image_full = hidden_states_image_full.view(bs*num_image_crops, h_full, w_full, -1)
 	
-	image_concise_hidden_states = nn.functional.interpolate(
-	image_full_hidden_states.permute(0, 3, 1, 2).contiguous(),
-		size=(h_concise, w_concise),
+	hidden_states_image_compress = nn.functional.interpolate(
+	hidden_states_image_full.permute(0, 3, 1, 2).contiguous(),
+		size=(h_compress, w_compress),
 		mode='bilinear',
 		align_corners=False
 	)
-	image_concise_hidden_states = image_concise_hidden_states.permute(0, 2, 3, 1).contiguous().view(bs, num_image_crops*h_concise*w_concise, -1)
-	return image_concise_hidden_states
+	hidden_states_image_compress = hidden_states_image_compress.permute(0, 2, 3, 1).contiguous().view(bs, num_image_crops*h_compress*w_compress, -1)
+	return hidden_states_image_compress
 
 class LlavaQwenConfig(Qwen2Config):
 	model_type = "llava_qwen"
@@ -65,7 +68,6 @@ class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
 
 	def __init__(self, config: Qwen2Config):
 		super(LlavaQwenModel, self).__init__(config)
-
 
 	def forward(
 		self,
@@ -78,10 +80,10 @@ class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
 		output_attentions: Optional[bool] = None,
 		output_hidden_states: Optional[bool] = None,
 		return_dict: Optional[bool] = None,
-		length_info: Optional[dict] = None,
-		position_ids_fast_q: Optional[torch.LongTensor] = None,
-		position_ids_fast_kv: Optional[torch.LongTensor] = None,
-		attention_masks_fast_4d: Optional[torch.Tensor] = None,
+		attention_mask_regular_4d: Optional[torch.Tensor] = None,
+		attention_mask_compress_4d: Optional[torch.Tensor] = None,
+		position_ids_image_compress: Optional[torch.LongTensor] = None,
+		num_image_crops: Optional[int] = None,
 	) -> Union[Tuple, BaseModelOutputWithPast]:
 		output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
 		output_hidden_states = (
@@ -109,56 +111,73 @@ class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
 				use_cache = False
 
 		past_key_values_length = 0
-
+		
 		if use_cache:
 			use_legacy_cache = not isinstance(past_key_values, Cache)
 			if use_legacy_cache:
 				past_key_values = DynamicCache.from_legacy_cache(past_key_values)
 			past_key_values_length = past_key_values.get_usable_length(seq_length)
+		first_forward = (past_key_values_length==0)
 
+		if past_key_values_length > 0:
+			position_ids = None
 		if position_ids is None:
 			device = input_ids.device if input_ids is not None else inputs_embeds.device
 			position_ids = torch.arange(
 				past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
 			)
 			position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
-		else:
-			position_ids = position_ids.view(-1, seq_length).long()
 
 		if inputs_embeds is None:
 			inputs_embeds = self.embed_tokens(input_ids)
 
-		# if attention_mask is not None and self._attn_implementation == "flash_attention_2" and use_cache:
-		#     is_padding_right = attention_mask[:, -1].sum().item() != batch_size
-		#     if is_padding_right:
-		#         raise ValueError(
-		#             "You are attempting to perform batched generation with padding_side='right'"
-		#             " this may lead to unexpected behaviour for Flash Attention version of Qwen2. Make sure to "
-		#             " call `tokenizer.padding_side  = 'left'` before tokenizing the input. "
-		#         )
+		if past_key_values_length == 0:
+			mask_start_layer = os.getenv('MASK_START_LAYER')
+			if mask_start_layer is not None:
+				mask_start_layer = int(mask_start_layer)
+				attention_mask_regular_4d_mask = attention_mask_regular_4d.clone()
+				per_crop_token_len = self.config.per_crop_token_len
+				image_full_len = num_image_crops * per_crop_token_len
+				tensor = torch.full((image_full_len, image_full_len), torch.finfo(inputs_embeds.dtype).min, dtype = attention_mask_regular_4d_mask.dtype, device=attention_mask_regular_4d_mask.device)
+				tensor.fill_diagonal_(0)
+				tensor = tensor.view(1, 1, image_full_len, image_full_len).repeat(attention_mask_regular_4d_mask.shape[0], 1, 1, 1)
+				attention_mask_regular_4d_mask[:, :, :image_full_len, :image_full_len] = tensor
 
-		# if self._attn_implementation == "flash_attention_2":
-		#     # 2d mask is passed through the layers
-		#     attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
-		# elif self._attn_implementation == "sdpa" and not output_attentions:
-		#     # output_attentions=True can not be supported when using SDPA, and we fall back on
-		#     # the manual implementation that requires a 4D causal mask in all cases.
-		#     attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-		#         attention_mask,
-		#         (batch_size, seq_length),
-		#         inputs_embeds,
-		#         past_key_values_length,
-		#     )
-		# else:
-		#     # 4d mask is passed through the layers
-		#     attention_mask = _prepare_4d_causal_attention_mask(
-		#         attention_mask,
-		#         (batch_size, seq_length),
-		#         inputs_embeds,
-		#         past_key_values_length,
-		#         sliding_window=self.config.sliding_window,
-		#     )
+			attention_mask = attention_mask_regular_4d
 
+
+		else:
+			attention_mask = None
+			if attention_mask is not None and self._attn_implementation == "flash_attention_2" and use_cache:
+				is_padding_right = attention_mask[:, -1].sum().item() != batch_size
+				if is_padding_right:
+					raise ValueError(
+						"You are attempting to perform batched generation with padding_side='right'"
+						" this may lead to unexpected behaviour for Flash Attention version of Qwen2. Make sure to "
+						" call `tokenizer.padding_side  = 'left'` before tokenizing the input. "
+					)
+
+			if self._attn_implementation == "flash_attention_2":
+				# 2d mask is passed through the layers
+				attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
+			elif self._attn_implementation == "sdpa" and not output_attentions:
+				# output_attentions=True can not be supported when using SDPA, and we fall back on
+				# the manual implementation that requires a 4D causal mask in all cases.
+				attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+					attention_mask,
+					(batch_size, seq_length),
+					inputs_embeds,
+					past_key_values_length,
+				)
+			else:
+				# 4d mask is passed through the layers
+				attention_mask = _prepare_4d_causal_attention_mask(
+					attention_mask,
+					(batch_size, seq_length),
+					inputs_embeds,
+					past_key_values_length,
+					sliding_window=self.config.sliding_window,
+				)
 		hidden_states = inputs_embeds
 
 		# decoder layers
@@ -166,106 +185,116 @@ class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
 		all_self_attns = () if output_attentions else None
 		next_decoder_cache = None
 
-		fast_vision_start_layer = self.config.fast_vision_start_layer
+		per_crop_token_len = self.config.per_crop_token_len
+		compress_reduce_factor = self.config.compress_reduce_factor
+		compress_v = self.config.compress_v
+		compress_v_start_layer = self.config.compress_v_start_layer
+
+		hidden_states = inputs_embeds
+
+		if first_forward:
+			image_full_len = num_image_crops * per_crop_token_len
+			newline_len = num_image_crops
+			image_compress_len = num_image_crops * per_crop_token_len // compress_reduce_factor**2
+			text_len = inputs_embeds.shape[1] - image_full_len - newline_len
+			hidden_states_image_full = hidden_states[:, :image_full_len]
+			hidden_states_newline_full = hidden_states[:, image_full_len:image_full_len+newline_len]
+			hidden_states_text = hidden_states[:, image_full_len+newline_len:]
 
 		for layer_i, decoder_layer in enumerate(self.layers):
 			if output_hidden_states:
 				all_hidden_states += (hidden_states,)
 
-			if not self.config.fast_vision or layer_i < fast_vision_start_layer:
+			if not compress_v or layer_i < compress_v_start_layer or not first_forward:
+				if first_forward and mask_start_layer is not None:
+					if layer_i >= mask_start_layer:
+						attention_mask = attention_mask_regular_4d_mask
+					else:
+						attention_mask = attention_mask_regular_4d
 				if self.gradient_checkpointing and self.training:
 					layer_outputs = self._gradient_checkpointing_func(
 						decoder_layer.__call__,
 						hidden_states,
-						None,
 						attention_mask,
 						position_ids,
-						None,
+						position_ids,
 						past_key_values,
 						output_attentions,
 						use_cache,
+						None,
+						False,
+
 					)
 				else:
 					layer_outputs = decoder_layer(
 						hidden_states,
-						None,
 						attention_mask,
 						position_ids,
-						None,
+						position_ids,
 						past_key_value=past_key_values,
 						output_attentions=output_attentions,
 						use_cache=use_cache,
+						cache_position = None,
+						compress_v=False,
+
 					)
 
 				hidden_states = layer_outputs[0]
 
 			else:
-				if layer_i == fast_vision_start_layer:
-					image_full_len = length_info['image_full_len']
-					image_concise_len = length_info['image_concise_len']
-					text_len = length_info['text_len']
-					newline_len = length_info['newline_len']
+				if layer_i == compress_v_start_layer:
+					hidden_states_image_full = hidden_states[:, :image_full_len]
+					hidden_states_newline_full = hidden_states[:, image_full_len:image_full_len+newline_len]
+					hidden_states_text = hidden_states[:, image_full_len+newline_len:]
 
-					image_full_hidden_states = []
-					text_hidden_states = []
-					newline_hidden_states = []
+					position_ids_image_full = position_ids[:, :image_full_len]
+					position_ids_newline_full = position_ids[:, image_full_len:image_full_len+newline_len]
+					position_ids_text = position_ids[:, image_full_len+newline_len:]
 
-					image_full_hidden_states = hidden_states[:, :image_full_len[0]].contiguous()
-					newline_hidden_states = hidden_states[:, image_full_len[0]:image_full_len[0]+newline_len[0]]
-					text_hidden_states = hidden_states[:, image_full_len[0]+newline_len[0]:]
-						
-					concise_reduce_factor = self.config.concise_reduce_factor
-					image_concise_hidden_states = get_image_concise(image_full_hidden_states, concise_reduce_factor, self.config.image_token_len_per_side**2)
-					
-					hidden_states_fast_q = []
-					hidden_states_fast_kv = []
-					# q [image_concise, newline, text]
-					# key&value [image_full, image_concise, newline, text]
+					hidden_states_image_compress = get_image_compress(hidden_states_image_full, compress_reduce_factor, per_crop_token_len)
 
-					hidden_states_fast_q = torch.cat([image_concise_hidden_states, newline_hidden_states, text_hidden_states], 1)
-					hidden_states_fast_kv = torch.cat([image_full_hidden_states, image_concise_hidden_states, newline_hidden_states, text_hidden_states], 1)
+					position_ids_compress_q = torch.cat([position_ids_image_compress, position_ids_newline_full, position_ids_text], 1)
+					position_ids_compress_kv = torch.cat([position_ids_image_compress, position_ids_image_full,  position_ids_newline_full, position_ids_text], 1)
 
 
 				if self.gradient_checkpointing and self.training:
 					layer_outputs = self._gradient_checkpointing_func(
 						decoder_layer.__call__,
-						hidden_states_fast_q,
-						hidden_states_fast_kv,
-						attention_masks_fast_4d,
-						position_ids_fast_q,
-						position_ids_fast_kv,
+						torch.cat([hidden_states_image_compress, hidden_states_image_full, hidden_states_newline_full, hidden_states_text], 1),
+						attention_mask_compress_4d,
+						position_ids_compress_q,
+						position_ids_compress_kv,
 						past_key_values,
 						output_attentions,
 						use_cache,
+						None,
+						True,
+						image_compress_len,
+						image_full_len
 					)
 				else:
 					layer_outputs = decoder_layer(
-						hidden_states_fast_q,
-						hidden_states_fast_kv,
-						attention_masks_fast_4d,
-						position_ids_fast_q,
-						position_ids_fast_kv,
-						past_key_values,
-						output_attentions,
-						use_cache,
+						torch.cat([hidden_states_image_compress, hidden_states_image_full, hidden_states_newline_full, hidden_states_text], 1),
+						attention_mask_compress_4d,
+						position_ids_compress_q,
+						position_ids_compress_kv,
+						past_key_value=past_key_values,
+						output_attentions=output_attentions,
+						use_cache=use_cache,
+						cache_position = None,
+						compress_v=True,
+						image_compress_len=image_compress_len,
+						image_full_len=image_full_len,
 					)
 
-				hidden_states_fast_q = layer_outputs[0]
+				hidden_states_image_compress = layer_outputs[0][:, :image_compress_len]
+				hidden_states_newline = layer_outputs[0][:, image_compress_len:image_compress_len+newline_len]
+				hidden_states_text = layer_outputs[0][:, image_compress_len+newline_len:]
 
-				h = w = self.config.image_token_len_per_side
-				h_concise = h//concise_reduce_factor
-				w_concise = w//concise_reduce_factor
+				hidden_states_image_full = self.vision_mlp_layers[layer_i-compress_v_start_layer](hidden_states_image_full, hidden_states_image_compress, compress_reduce_factor, per_crop_token_len)
 
-				image_concise_hidden_states = hidden_states_fast_q[:, :image_concise_len[0]].contiguous()
-				newline_hidden_states = hidden_states_fast_q[:, image_concise_len[0]:image_concise_len[0]+newline_len[0]]
-				text_hidden_states = hidden_states_fast_q[:, image_concise_len[0]+newline_len[0]:]
-
-				image_full_hidden_states = self.vision_mlp_layers[layer_i-fast_vision_start_layer](image_full_hidden_states, image_concise_hidden_states, h, h_concise)
-
-				hidden_states_fast_q = torch.cat([image_concise_hidden_states, newline_hidden_states, text_hidden_states], 1)
-				hidden_states_fast_kv = torch.cat([image_full_hidden_states, image_concise_hidden_states, newline_hidden_states, text_hidden_states], 1)
-
-				hidden_states = hidden_states_fast_q
+				if layer_i == len(self.layers) - 1:
+					hidden_states = torch.cat([hidden_states_image_full, hidden_states_newline, hidden_states_text], 1)
 
 			if use_cache:
 				next_decoder_cache = layer_outputs[2 if output_attentions else 1]
@@ -278,6 +307,20 @@ class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
 		# add hidden states from the last decoder layer
 		if output_hidden_states:
 			all_hidden_states += (hidden_states,)
+		
+		if first_forward and compress_v and use_cache:
+			for layer_i in range(len(next_decoder_cache.key_cache)):
+				if layer_i >= compress_v_start_layer:
+					key_cache = next_decoder_cache.key_cache[layer_i]
+					key_cache = key_cache[:, :, image_compress_len:]
+					next_decoder_cache.key_cache[layer_i] = key_cache
+
+					value_cache = next_decoder_cache.value_cache[layer_i]
+					value_cache = value_cache[:, :, image_compress_len:]
+					next_decoder_cache.value_cache[layer_i] = value_cache
+
+					if layer_i == 0:
+						next_decoder_cache.seen_tokens -= image_compress_len
 
 		next_cache = None
 		if use_cache:
@@ -329,10 +372,9 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
 		cache_position=None,
 	) -> Union[Tuple, CausalLMOutputWithPast]:
 
+		prepare_inputs_labels = inputs_embeds is None
 		if inputs_embeds is None:
-			(input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels, labels_fast, length_info, position_ids_fast_q, position_ids_fast_kv, attention_masks_fast_4d) = self.prepare_inputs_labels_for_multimodal(input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities, image_sizes)
-			if self.get_model().config.fast_vision:
-				labels = labels_fast
+			(input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels, attention_mask_regular_4d, attention_mask_compress_4d, position_ids_image_compress, num_image_crops) = self.prepare_inputs_labels_for_multimodal(input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities, image_sizes)
 
 		output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
 		output_hidden_states = (
@@ -351,10 +393,10 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
 			output_attentions=output_attentions,
 			output_hidden_states=output_hidden_states,
 			return_dict=return_dict,
-			length_info=length_info,
-			position_ids_fast_q=position_ids_fast_q,
-			position_ids_fast_kv=position_ids_fast_kv,
-			attention_masks_fast_4d=attention_masks_fast_4d
+			attention_mask_regular_4d=attention_mask_regular_4d if prepare_inputs_labels else self.attention_mask_regular_4d,
+			attention_mask_compress_4d=attention_mask_compress_4d if prepare_inputs_labels else self.attention_mask_compress_4d,
+			position_ids_image_compress=position_ids_image_compress if prepare_inputs_labels else self.position_ids_image_compress,
+			num_image_crops=num_image_crops if prepare_inputs_labels else self.num_image_crops,
 		)
 
 		hidden_states = outputs[0]
@@ -403,7 +445,11 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
 			raise NotImplementedError("`inputs_embeds` is not supported")
 
 		if images is not None:
-			(inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes)
+			(inputs, position_ids, attention_mask, _, inputs_embeds, _, attention_mask_regular_4d, attention_mask_compress_4d, position_ids_image_compress, num_image_crops) = self.prepare_inputs_labels_for_multimodal(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes)
+			self.attention_mask_regular_4d = attention_mask_regular_4d
+			self.attention_mask_compress_4d = attention_mask_compress_4d
+			self.position_ids_image_compress = position_ids_image_compress
+			self.num_image_crops = num_image_crops
 		else:
 			inputs_embeds = self.get_model().embed_tokens(inputs)
 
@@ -419,17 +465,11 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
 			inputs["image_sizes"] = image_sizes
 		return inputs
 
-
-
-
-
-
 from transformers.models.qwen2.modeling_qwen2 import Qwen2SdpaAttention, Qwen2DecoderLayer, Qwen2RMSNorm, rotate_half, repeat_kv
 
 def decoder_forward(
 	self,
 	hidden_states,
-	kv_states=None,
 	attention_mask = None,
 	position_ids_q = None,
 	position_ids_kv = None,
@@ -437,16 +477,20 @@ def decoder_forward(
 	output_attentions = False,
 	use_cache = False,
 	cache_position = None,
-	position_embeddings = None,
+	compress_v=False,
+	image_compress_len=36,
+	image_full_len=576,
 	**kwargs,):
-		residual = hidden_states
-
-		hidden_states = self.input_layernorm(hidden_states)
-		if kv_states is None:
+		if compress_v:
+			residual = torch.cat([hidden_states[:, :image_compress_len], hidden_states[:, image_compress_len+image_full_len:]], 1)
+			hidden_states = self.input_layernorm(hidden_states)
+			kv_states = hidden_states
+			hidden_states = torch.cat([hidden_states[:, :image_compress_len], hidden_states[:, image_compress_len+image_full_len:]], 1)
+		else:
+			residual = hidden_states
+			hidden_states = self.input_layernorm(hidden_states)
 			kv_states = hidden_states
 			position_ids_kv = position_ids_q
-		else:
-			kv_states = self.input_layernorm(kv_states)
 
 		# Cross Attention
 		hidden_states, self_attn_weights, present_key_value = self.self_attn(
@@ -459,7 +503,6 @@ def decoder_forward(
 			output_attentions=output_attentions,
 			use_cache=use_cache,
 			cache_position=cache_position,
-			position_embeddings=position_embeddings,
 			**kwargs,
 		)
 		hidden_states = residual + hidden_states
@@ -504,9 +547,7 @@ def Qwen2SdpaAttention_forward(
 	output_attentions = False,
 	use_cache = False,
 	cache_position = None,
-	position_embeddings = None
 ):
-
 	bsz, q_len, _ = hidden_states.size()
 	kv_seq_len = kv_states.shape[1]
 
@@ -518,11 +559,13 @@ def Qwen2SdpaAttention_forward(
 	key_states = key_states.view(bsz, kv_seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 	value_states = value_states.view(bsz, kv_seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
-	cos, sin = self.rotary_emb(value_states, seq_len=max(q_len, kv_seq_len))
-	query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids_q, position_ids_kv)
-
 	# In case static cache is used, it is an instance attribute.
 	past_key_value = getattr(self, "past_key_value", past_key_value)
+	
+	if past_key_value is not None:
+		kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+	cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+	query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids_q, position_ids_kv)
 
 	if past_key_value is not None:
 		cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
