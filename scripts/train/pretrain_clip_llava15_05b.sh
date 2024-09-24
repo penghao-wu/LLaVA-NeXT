@@ -1,7 +1,8 @@
 export OMP_NUM_THREADS=8
 export NCCL_IB_DISABLE=0
 export NCCL_IB_GID_INDEX=3
-export NCCL_SOCKET_IFNAME=bond0.1000
+export NCCL_SOCKET_IFNAME=eth0
+export NCCL_DEBUG=INFO
 
 LLM_VERSION="Qwen/Qwen2-0.5B-Instruct"
 LLM_VERSION_CLEAN="${LLM_VERSION//\//_}"
@@ -17,7 +18,8 @@ RANK=0
 ADDR="127.0.0.1"
 PORT=29500
 
-
+cd /mnt/bn/vl-research/workspace/boli01/projects/llava_next_s2
+pip install -e ".[train]"
 ############### Pretrain ################
 
 PROMPT_VERSION=plain
