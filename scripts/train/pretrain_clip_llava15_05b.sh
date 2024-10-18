@@ -4,27 +4,28 @@ export NCCL_IB_GID_INDEX=3
 export NCCL_SOCKET_IFNAME=eth0
 export NCCL_DEBUG=INFO
 
+export WANDB_API_KEY="618eb3b78242f01000855a123d29e2ac98a60f30" &&
+export WANDB_PROJECT="compressv" &&
+
 LLM_VERSION="Qwen/Qwen2-0.5B-Instruct"
 LLM_VERSION_CLEAN="${LLM_VERSION//\//_}"
 VISION_MODEL_VERSION="openai/clip-vit-large-patch14-336"
 VISION_MODEL_VERSION_CLEAN="${VISION_MODEL_VERSION//\//_}"
 
-DATA_PATH="/home/cirrascale/penghaowu_workspace/data/jsons/share-captioner_coco_lcs_sam_1246k_1107.json"
-IMAGE_FOLDER="/home/cirrascale/penghaowu_workspace/data"
+DATA_PATH="/mnt/sfs-common/krhu/penghao_workspace/data/jsons/share-captioner_coco_lcs_sam_1246k_1107.json"
+IMAGE_FOLDER="/mnt/sfs-common/krhu/penghao_workspace/data"
 
-NUM_GPUS=8
+NUM_GPUS=4
 NNODES=1
 RANK=0
 ADDR="127.0.0.1"
-PORT=29500
+PORT=29700
 
-cd /mnt/bn/vl-research/workspace/boli01/projects/llava_next_s2
-pip install -e ".[train]"
 ############### Pretrain ################
 
-PROMPT_VERSION=plain
+PROMPT_VERSION=qwen_1_5
 
-BASE_RUN_NAME="compressv-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-mlp2x_gelu-pretrain_sharegpt4v_bs512"
+BASE_RUN_NAME="compressv_qwen05b_CLIP_mlp_baseline_shareGPT4V_unpad_pretrain_GPU"
 echo "BASE_RUN_NAME: ${BASE_RUN_NAME}"
 HF_MODEL_ID="llava15-pretrain"
 
@@ -41,6 +42,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --nnodes="${NN
     --max_num_image_crops 1 \
     --per_crop_token_len 576 \
     --mm_projector_type mlp2x_gelu \
+    --image_aspect_ratio pad \
     --mm_use_im_start_end False \
     --mm_use_im_patch_token False \
     --bf16 True \
@@ -48,7 +50,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --nnodes="${NN
     --num_train_epochs 1 \
     --per_device_train_batch_size 8 \
     --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 8 \
+    --gradient_accumulation_steps 16 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
     --save_total_limit 1 \

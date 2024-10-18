@@ -1,30 +1,34 @@
 export OMP_NUM_THREADS=8
 export NCCL_IB_DISABLE=0
 export NCCL_IB_GID_INDEX=3
-export NCCL_SOCKET_IFNAME=bond0.1000
+export NCCL_SOCKET_IFNAME=eth0
+export NCCL_DEBUG=INFO
+
+export WANDB_API_KEY="618eb3b78242f01000855a123d29e2ac98a60f30" &&
+export WANDB_PROJECT="compressv" &&
 
 LLM_VERSION="Qwen/Qwen2-0.5B-Instruct"
 LLM_VERSION_CLEAN="${LLM_VERSION//\//_}"
 VISION_MODEL_VERSION="openai/clip-vit-large-patch14-336"
 VISION_MODEL_VERSION_CLEAN="${VISION_MODEL_VERSION//\//_}"
 
-NUM_GPUS=8
+NUM_GPUS=4
 NNODES=1
 RANK=0
 ADDR="127.0.0.1"
-PORT=29500
+PORT=29600
 
 ############### Pretrain ################
 
-DATA_PATH="/home/cirrascale/penghaowu_workspace/data/jsons/llava_next_raw_format_processed.json"
-IMAGE_FOLDER="/home/cirrascale/penghaowu_workspace/data/llava_next_data"
+DATA_PATH="/mnt/sfs-common/krhu/penghao_workspace/data/jsons/llava_next_raw_format_processed.json"
+IMAGE_FOLDER="/mnt/sfs-common/krhu/penghao_workspace/data/llava_next"
 
 PROMPT_VERSION="qwen_1_5"
 
-BASE_RUN_NAME="llava15-openai_clip-vit-large-patch14-336-Qwen_Qwen2-0.5B-Instruct-mlp2x_gelu-pretrain_558k_plain_bs256"
+BASE_RUN_NAME="compressv_qwen05b_CLIP_mlp_baseline_shareGPT4V_resize_pretrain_GPU"
 echo "BASE_RUN_NAME: ${BASE_RUN_NAME}"
 
-MID_RUN_NAME="llava15-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-mlp2x_gelu-558kpt-finetune"
+MID_RUN_NAME="compressv_qwen05b_CLIP_mlp_baseline_resize_finetune_738k_GPU"
 echo "MID_RUN_NAME: ${MID_RUN_NAME}"
 
 ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --nnodes="${NNODES}" --node_rank="${RANK}" --master_addr="${ADDR}" --master_port="${PORT}" \
@@ -45,19 +49,23 @@ ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --nnodes="${NN
     --group_by_modality_length True \
     --max_num_image_crops 1 \
     --per_crop_token_len 576 \
+    --compress_reduce_factor 4 \
+    --compress_v False \
+    --compress_v_start_layer 12 \
+    --image_aspect_ratio resize \
     --mm_patch_merge_type spatial_unpad \
     --bf16 True \
     --run_name $MID_RUN_NAME \
     --output_dir "./checkpoints/${MID_RUN_NAME}" \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 1 \
+    --per_device_train_batch_size 4 \
     --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 16 \
+    --gradient_accumulation_steps 32 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
-    --save_steps 1000 \
+    --save_steps 500 \
     --save_total_limit 1 \
-    --learning_rate 1e-5 \
+    --learning_rate 2e-5 \
     --weight_decay 0. \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \

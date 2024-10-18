@@ -4,6 +4,9 @@ export NCCL_IB_GID_INDEX=3
 export NCCL_SOCKET_IFNAME=eth0
 export NCCL_DEBUG=INFO
 
+export WANDB_API_KEY="618eb3b78242f01000855a123d29e2ac98a60f30" &&
+export WANDB_PROJECT="compressv" &&
+
 LLM_VERSION="lmsys/vicuna-7b-v1.5"
 LLM_VERSION_CLEAN="${LLM_VERSION//\//_}"
 VISION_MODEL_VERSION="openai/clip-vit-large-patch14-336"
@@ -12,7 +15,7 @@ VISION_MODEL_VERSION_CLEAN="${VISION_MODEL_VERSION//\//_}"
 DATA_PATH="/mnt/sfs-common/krhu/penghao_workspace/data/jsons/share-captioner_coco_lcs_sam_1246k_1107.json"
 IMAGE_FOLDER="/mnt/sfs-common/krhu/penghao_workspace/data/"
 
-NUM_GPUS=2
+NUM_GPUS=4
 NNODES=1
 RANK=0
 ADDR="localhost"
@@ -21,9 +24,9 @@ PORT=29600
 
 ############### Pretrain ################
 
-PROMPT_VERSION=plain
+PROMPT_VERSION=v1
 
-BASE_RUN_NAME="llava15-fast-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-mlp2x_gelu-pretrain_sharegpt4v_plain_bs512"
+BASE_RUN_NAME="compressv_vicuna7b_CLIP_mlp_2scale_layer11_shareGPT4V_resize_pretrain_GPU"
 echo "BASE_RUN_NAME: ${BASE_RUN_NAME}"
 HF_MODEL_ID="llava15-fast-pretrain"
 
@@ -38,20 +41,21 @@ ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --nnodes="${NN
     --mm_tunable_parts="mm_mlp_adapter,mm_vision_mlp" \
     --mm_vision_mlp_lr 1e-4 \
     --mm_vision_select_layer -2 \
-    --fast_vision True \
-    --fast_vision_start_layer 11 \
-    --concise_reduce_factor 4 \
     --max_num_image_crops 1 \
     --per_crop_token_len 576 \
+    --compress_reduce_factor 4 \
+    --compress_v True \
+    --compress_v_start_layer 11 \
     --mm_projector_type mlp2x_gelu \
     --mm_use_im_start_end False \
     --mm_use_im_patch_token False \
+    --image_aspect_ratio resize \
     --bf16 True \
     --output_dir ./checkpoints/projectors/${BASE_RUN_NAME} \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 32 \
+    --per_device_train_batch_size 8 \
     --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 2 \
+    --gradient_accumulation_steps 16 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
     --save_total_limit 1 \
@@ -64,13 +68,10 @@ ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --nnodes="${NN
     --tf32 True \
     --model_max_length 2048 \
     --gradient_checkpointing True \
-    --dataloader_num_workers 16 \
+    --dataloader_num_workers 4 \
     --lazy_preprocess True \
     --report_to wandb \
     --run_name $BASE_RUN_NAME \
-    --attn_implementation sdpa \
-    --push_to_hub True \
-    --hub_model_id ${HF_MODEL_ID} \
-    --hub_token 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
+    --attn_implementation sdpa 
 
 # You can delete the sdpa attn_implementation if you want to use flash attn

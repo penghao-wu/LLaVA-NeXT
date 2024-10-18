@@ -331,6 +331,11 @@ def process_images(images, image_processor, model_cfg):
             image = expand2square(image, tuple(int(x * 255) for x in image_processor.image_mean))
             image = image_processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
             new_images.append(image)
+    elif image_aspect_ratio == "resize":
+        for image in images:
+            image = image.resize((image_processor.size['shortest_edge'], image_processor.size['shortest_edge']))
+            image = image_processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
+            new_images.append(image)
     else:
         return image_processor.preprocess(images, return_tensors="pt")["pixel_values"]
     if all(x.shape == new_images[0].shape for x in new_images):

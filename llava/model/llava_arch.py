@@ -24,14 +24,13 @@ import torch.nn as nn
 from .multimodal_encoder.builder import build_vision_tower
 from .multimodal_resampler.builder import build_vision_resampler
 from .multimodal_projector.builder import build_vision_projector
-from .vision_mlp import VisionMLP
+from .vision_mlp import VisionMLP, svd_init
 
 from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
 from llava.mm_utils import get_anyres_image_grid_shape
 from llava.utils import rank0_print, rank_print
 import random
-
 
 class LlavaMetaModel:
 
@@ -45,10 +44,14 @@ class LlavaMetaModel:
 			self.mm_projector = build_vision_projector(config, vision_cfg=self.vision_tower.config)
 
 			if config.compress_v:
+				self.init_compressv = True
 				hidden_size_reduce_factor = 4 if config.hidden_size >= 1024 else 2
+				config.num_of_vision_mlp_layers = config.num_hidden_layers - config.compress_v_start_layer
 				self.vision_mlp_layers = nn.ModuleList(
 						[VisionMLP(self.config, self.config.hidden_size//hidden_size_reduce_factor) for layer_idx in range(0, config.num_of_vision_mlp_layers)]
 						)
+				# for layer_idx in range(config.compress_v_start_layer, config.num_hidden_layers):
+				# 		self.layers[layer_idx].vision_mlp_layers = VisionMLP(self.config, self.config.hidden_size//hidden_size_reduce_factor, True)
 
 			self.image_newline = nn.Parameter(torch.empty(config.hidden_size, dtype=self.dtype))
 
@@ -126,6 +129,11 @@ class LlavaMetaModel:
 				self.vision_mlp_layers = nn.ModuleList(
 					[VisionMLP(self.config, self.config.hidden_size//hidden_size_reduce_factor) for layer_idx in range(0, num_of_vision_mlp_layers)]
 					)
+				# self.init_compressv = False
+				self.init_compressv = True
+				# for layer_idx in range(compress_v_start_layer, self.config.num_hidden_layers):
+				# 	self.layers[layer_idx].vision_mlp_layers = VisionMLP(self.config, self.config.hidden_size//hidden_size_reduce_factor)
+					# svd_init(self.layers[layer_idx])
 
 			# if "unpad" in mm_patch_merge_type:
 			embed_std = 1 / torch.sqrt(torch.tensor(self.config.hidden_size, dtype=self.dtype))
@@ -146,6 +154,9 @@ class LlavaMetaModel:
 			incompatible_keys = self.vision_resampler.load_state_dict(get_w(mm_projector_weights, "vision_resampler"), strict=False)
 			rank0_print(f"Loaded vision resampler weights from {pretrain_mm_mlp_adapter}. Incompatible keys: {incompatible_keys}")
 			if compress_v:
+				# for layer_idx in range(compress_v_start_layer, self.config.num_hidden_layers):
+				# 	incompatible_keys = self.layers[layer_idx].vision_mlp_layers.load_state_dict(get_w(mm_projector_weights, 'layers.{}.vision_mlp_layers'.format(layer_idx)),strict=False)
+				# 	print(f"Loaded vision mlp weights from {pretrain_mm_mlp_adapter}. Incompatible keys: {incompatible_keys}")
 				incompatible_keys = self.vision_mlp_layers.load_state_dict(get_w(mm_projector_weights, "vision_mlp_layers"), strict=False)
 				rank0_print(f"Loaded vision mlp weights from {pretrain_mm_mlp_adapter}. Incompatible keys: {incompatible_keys}")
 
@@ -384,6 +395,39 @@ class LlavaMetaForCausalLM(ABC):
 
 				newline_feature = self.model.image_newline[None]
 				image_feature = image_feature.flatten(0,1)
+
+				# attention_mask_image_full = torch.ones((height, width), device=image_feature.device, dtype=torch.bool)
+				# left_offset, right_offset, top_offset, bottom_offset = get_padding_offset((height, width), image_size)
+				# if left_offset > 0:
+				# 	attention_mask_image_full[:, :left_offset] = 0
+				# if right_offset > 0:
+				# 	attention_mask_image_full[:, -right_offset:] = 0
+				# if top_offset > 0:
+				# 	attention_mask_image_full[:top_offset, :]=0
+				# if bottom_offset > 0:
+				# 	attention_mask_image_full[-bottom_offset:, :] = 0
+				# attention_mask_image_full = attention_mask_image_full.flatten()
+				# position_ids_image_full = attention_mask_image_full.cumsum(0)-1
+				# attention_mask_image_full = attention_mask_image_full.view(-1, 1)
+				# position_ids_image_full = position_ids_image_full.view(-1, 1)
+
+				# attention_mask_newline = torch.ones((1,1), device=image_feature.device, dtype=torch.bool)
+				# position_ids_newline = torch.full((1,1), position_ids_image_full.max()+1, device=image_feature.device, dtype=torch.long)
+
+				# attention_mask_image_compress = torch.ones((height_compress,width_compress), device=image_feature.device, dtype=torch.bool)
+				# left_offset, right_offset, top_offset, bottom_offset = get_padding_offset((height_compress, width_compress), image_size)
+				# if left_offset > 0:
+				# 	attention_mask_image_compress[:, :left_offset] = 0
+				# if right_offset > 0:
+				# 	attention_mask_image_compress[:, -right_offset:] = 0
+				# if top_offset > 0:
+				# 	attention_mask_image_compress[:top_offset, :]=0
+				# if bottom_offset > 0:
+				# 	attention_mask_image_compress[-bottom_offset:, :] = 0
+				# attention_mask_image_compress = attention_mask_image_compress.flatten()
+				# position_ids_image_compress = attention_mask_image_compress.cumsum(0)-1
+				# attention_mask_image_compress = attention_mask_image_compress.view(-1, 1)
+				# position_ids_image_compress = position_ids_image_compress.view(-1, 1)
 		
 		image_info = {}
 		image_info['image_feature'] = image_feature
@@ -399,6 +443,12 @@ class LlavaMetaForCausalLM(ABC):
 
 
 	def prepare_inputs_labels_for_multimodal(self, input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities=["image"], image_sizes=None):
+		compress_v = self.get_model().config.compress_v
+		if compress_v:
+			if not self.get_model().init_compressv:
+				for layer_idx in range(self.get_model().config.compress_v_start_layer, self.get_model().config.num_hidden_layers):
+					svd_init(self.get_model().layers[layer_idx])
+				self.get_model().init_compressv = True
 		vision_tower = self.get_vision_tower()
 		# rank_print(modalities)
 		if vision_tower is None or images is None or input_ids.shape[1] == 1:
@@ -602,6 +652,7 @@ class LlavaMetaForCausalLM(ABC):
 					cur_position_ids_newline.append(cur_image_info['position_ids_newline'] + cur_seq_len)
 
 					cur_seq_len += cur_image_info['image_feature'].shape[0] + cur_image_info['newline_feature'].shape[0]
+					# cur_seq_len += cur_image_info['position_ids_newline'].max() + 1
 
 					cur_labels_image_full.append(torch.full((len(cur_image_info['position_ids_image_full']), ), IGNORE_INDEX, device=self.device, dtype=torch.long))
 
@@ -671,7 +722,7 @@ class LlavaMetaForCausalLM(ABC):
 				padding_len = text_len - len(input_embeds_text[batch_idx])
 				input_embeds_text[batch_idx] = torch.cat([input_embeds_text[batch_idx], torch.zeros((padding_len, input_embeds_text[batch_idx].shape[-1]), device=self.device, dtype=input_embeds_text[batch_idx].dtype)])
 				attention_mask_text[batch_idx] = torch.cat([attention_mask_text[batch_idx], torch.zeros((padding_len, 1), device=self.device, dtype=torch.bool)])
-				position_ids_text[batch_idx] = torch.cat([position_ids_text[batch_idx], torch.zeros((padding_len, 1), device=self.device, dtype=torch.long)])
+				position_ids_text[batch_idx] = torch.cat([position_ids_text[batch_idx], torch.arange(position_ids_text[batch_idx].max().item()+1, position_ids_text[batch_idx].max().item()+1+padding_len, device=self.device, dtype=torch.long).view(-1, 1)])
 				labels_text[batch_idx] = torch.cat([labels_text[batch_idx], torch.full((padding_len, ), IGNORE_INDEX, device=self.device, dtype=torch.long)])
 
 		
@@ -703,19 +754,26 @@ class LlavaMetaForCausalLM(ABC):
 		# regular attention: Q=[image_full, newline_full, text], KV=[image_full, newline_full, text]
 		attention_mask_regular_4d = calculate_causal_attention_mask(position_ids, position_ids, attention_mask, input_embeds.dtype)
 
-		# compressv attention: Q=[image_compress, newline_full, text], KV=[image_compress, image_full, newline_full, text]
-		attention_mask_compress_4d = calculate_causal_attention_mask(torch.cat([position_ids_image_compress, position_ids_newline, position_ids_text], 1), torch.cat([position_ids_image_compress, position_ids_image_full, position_ids_newline, position_ids_text], 1), torch.cat([attention_mask_image_compress, attention_mask_image_full, attention_mask_newline, attention_mask_text], 1), input_embeds.dtype)
+		# compressv attention: Q=[image_compress, newline_full, text], KV=[image_full, image_compress, newline_full, text]
+		attention_mask_compress_4d = calculate_causal_attention_mask(torch.cat([position_ids_image_compress, position_ids_newline, position_ids_text], 1), torch.cat([position_ids_image_full, position_ids_image_compress, position_ids_newline, position_ids_text], 1), torch.cat([attention_mask_image_full, attention_mask_image_compress, attention_mask_newline, attention_mask_text], 1), input_embeds.dtype)
 
 		min_dtype = torch.finfo(input_embeds.dtype).min
 		# compress can't see full
-		attention_mask_compress_4d[:, :, :image_compress_len, image_compress_len:image_compress_len+image_full_len] = min_dtype
+		attention_mask_compress_4d[:, :, :image_compress_len, :image_full_len] = min_dtype
 		# others can't see compress
-		attention_mask_compress_4d[:, :, image_compress_len:, :image_compress_len] = min_dtype
+		attention_mask_compress_4d[:, :, image_compress_len:, image_full_len:image_full_len+image_compress_len] = min_dtype
+
+		# ee_attention_mask = attention_mask_regular_4d.clone()
+		# min_dtype = torch.finfo(input_embeds.dtype).min
+		# diag_masks = torch.full((image_full_len, image_full_len), min_dtype, dtype=ee_attention_mask.dtype, device=ee_attention_mask.device)
+		# diag_masks.fill_diagonal_(0) 
+		# ee_attention_mask[:, :, :image_full_len, :image_full_len] = diag_masks
+		# attention_mask_regular_4d = ee_attention_mask
 
 		attention_mask = attention_mask.view(attention_mask.shape[0], -1)
 		position_ids = position_ids.view(position_ids.shape[0], -1)
 		position_ids_image_compress = position_ids_image_compress.view(position_ids_image_compress.shape[0], -1)
-
+		# import pdb; pdb.set_trace()
 		return None, position_ids, attention_mask, past_key_values, input_embeds, labels, attention_mask_regular_4d, attention_mask_compress_4d, position_ids_image_compress, max_num_image_crops
 		# return None, position_ids_regular_all, attention_mask_regular_4d, past_key_values, input_embeds_regular_all, labels_regular_all
 

@@ -206,6 +206,7 @@ class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
 				all_hidden_states += (hidden_states,)
 
 			if not compress_v or layer_i < compress_v_start_layer or not first_forward:
+
 				if first_forward and mask_start_layer is not None:
 					if layer_i >= mask_start_layer:
 						attention_mask = attention_mask_regular_4d_mask
@@ -235,10 +236,9 @@ class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
 						output_attentions=output_attentions,
 						use_cache=use_cache,
 						cache_position = None,
-						compress_v=False,
+						sep_sa_ffn=False,
 
 					)
-
 				hidden_states = layer_outputs[0]
 
 			else:
@@ -253,14 +253,30 @@ class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
 
 					hidden_states_image_compress = get_image_compress(hidden_states_image_full, compress_reduce_factor, per_crop_token_len)
 
-					position_ids_compress_q = torch.cat([position_ids_image_compress, position_ids_newline_full, position_ids_text], 1)
-					position_ids_compress_kv = torch.cat([position_ids_image_compress, position_ids_image_full,  position_ids_newline_full, position_ids_text], 1)
+					# position_ids_compress_q = torch.cat([position_ids_image_compress, position_ids_newline_full, position_ids_text], 1)
+					# position_ids_compress_kv = torch.cat([position_ids_image_compress, position_ids_image_full,  position_ids_newline_full, position_ids_text], 1)
 
+
+					# position_ids_compress_q = torch.cat([position_ids_newline_full, position_ids_text], 1)
+					position_ids_compress_q = torch.cat([position_ids_image_compress, position_ids_newline_full, position_ids_text], 1)
+					position_ids_compress_kv = torch.cat([position_ids_image_full, position_ids_image_compress,  position_ids_newline_full, position_ids_text], 1)
+					# attention_mask_compress_4d = attention_mask_compress_4d[:, :, image_compress_len:, image_compress_len:]
+					# attention_mask_compress_4d = attention_mask_regular_4d[:, :, image_full_len:, :]
+
+					# attention_mask_regular_4d_mask = attention_mask_regular_4d.clone()
+					# per_crop_token_len = self.config.per_crop_token_len
+					# image_full_len = num_image_crops * per_crop_token_len
+					# tensor = torch.full((image_full_len, image_full_len), torch.finfo(inputs_embeds.dtype).min, dtype = attention_mask_regular_4d_mask.dtype, device=attention_mask_regular_4d_mask.device)
+					# tensor.fill_diagonal_(0)
+					# tensor = tensor.view(1, 1, image_full_len, image_full_len).repeat(attention_mask_regular_4d_mask.shape[0], 1, 1, 1)
+					# attention_mask_regular_4d_mask[:, :, :image_full_len, :image_full_len] = tensor
+					# attention_mask_compress_4d = attention_mask_regular_4d_mask
 
 				if self.gradient_checkpointing and self.training:
 					layer_outputs = self._gradient_checkpointing_func(
 						decoder_layer.__call__,
-						torch.cat([hidden_states_image_compress, hidden_states_image_full, hidden_states_newline_full, hidden_states_text], 1),
+						torch.cat([hidden_states_image_full, hidden_states_image_compress, hidden_states_newline_full, hidden_states_text], 1),
+						# torch.cat ([hidden_states_image_full, hidden_states_newline_full, hidden_states_text], 1),
 						attention_mask_compress_4d,
 						position_ids_compress_q,
 						position_ids_compress_kv,
@@ -274,7 +290,8 @@ class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
 					)
 				else:
 					layer_outputs = decoder_layer(
-						torch.cat([hidden_states_image_compress, hidden_states_image_full, hidden_states_newline_full, hidden_states_text], 1),
+						torch.cat([hidden_states_image_full, hidden_states_image_compress, hidden_states_newline_full, hidden_states_text], 1),
+						# torch.cat ([hidden_states_image_full, hidden_states_newline_full, hidden_states_text], 1),
 						attention_mask_compress_4d,
 						position_ids_compress_q,
 						position_ids_compress_kv,
@@ -282,19 +299,25 @@ class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
 						output_attentions=output_attentions,
 						use_cache=use_cache,
 						cache_position = None,
-						compress_v=True,
+						sep_sa_ffn=True,
 						image_compress_len=image_compress_len,
 						image_full_len=image_full_len,
 					)
 
-				hidden_states_image_compress = layer_outputs[0][:, :image_compress_len]
-				hidden_states_newline = layer_outputs[0][:, image_compress_len:image_compress_len+newline_len]
-				hidden_states_text = layer_outputs[0][:, image_compress_len+newline_len:]
+				# hidden_states_image_compress = layer_outputs[0][:, :image_compress_len]
+				# hidden_states_image_full = layer_outputs[0][:, :image_full_len]
+				# hidden_states_image_compress = layer_outputs[0][:, image_full_len:image_full_len+image_compress_len]
+				# hidden_states_newline_full = layer_outputs[0][:, image_full_len+image_compress_len:image_full_len+image_compress_len+newline_len]
+				# hidden_states_text = layer_outputs[0][:, image_full_len+image_compress_len+newline_len:]
 
+				hidden_states_image_compress = layer_outputs[0][:, :image_compress_len]
+				hidden_states_newline_full = layer_outputs[0][:, image_compress_len:image_compress_len+newline_len]
+				hidden_states_text = layer_outputs[0][:, image_compress_len+newline_len:]
+				# hidden_states_image_full = decoder_layer.vision_mlp_layers(hidden_states_image_full, hidden_states_image_compress, compress_reduce_factor, per_crop_token_len)
 				hidden_states_image_full = self.vision_mlp_layers[layer_i-compress_v_start_layer](hidden_states_image_full, hidden_states_image_compress, compress_reduce_factor, per_crop_token_len)
 
 				if layer_i == len(self.layers) - 1:
-					hidden_states = torch.cat([hidden_states_image_full, hidden_states_newline, hidden_states_text], 1)
+					hidden_states = torch.cat([hidden_states_image_full, hidden_states_newline_full, hidden_states_text], 1)
 
 			if use_cache:
 				next_decoder_cache = layer_outputs[2 if output_attentions else 1]
@@ -312,16 +335,15 @@ class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
 			for layer_i in range(len(next_decoder_cache.key_cache)):
 				if layer_i >= compress_v_start_layer:
 					key_cache = next_decoder_cache.key_cache[layer_i]
-					key_cache = key_cache[:, :, image_compress_len:]
+					key_cache = torch.cat([key_cache[:, :, :image_full_len], key_cache[:, :, image_full_len+image_compress_len:]], 2)
 					next_decoder_cache.key_cache[layer_i] = key_cache
 
 					value_cache = next_decoder_cache.value_cache[layer_i]
-					value_cache = value_cache[:, :, image_compress_len:]
+					value_cache = torch.cat([value_cache[:, :, :image_full_len], value_cache[:, :, image_full_len+image_compress_len:]], 2)
 					next_decoder_cache.value_cache[layer_i] = value_cache
 
 					if layer_i == 0:
-						next_decoder_cache.seen_tokens -= image_compress_len
-
+						next_decoder_cache._seen_tokens -= image_compress_len
 		next_cache = None
 		if use_cache:
 			next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
@@ -417,7 +439,6 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
 			# Enable model parallelism
 			shift_labels = shift_labels.to(shift_logits.device)
 			loss = loss_fct(shift_logits, shift_labels)
-
 		if not return_dict:
 			output = (logits,) + outputs[1:]
 			return (loss,) + output if loss is not None else output
@@ -465,7 +486,8 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
 			inputs["image_sizes"] = image_sizes
 		return inputs
 
-from transformers.models.qwen2.modeling_qwen2 import Qwen2SdpaAttention, Qwen2DecoderLayer, Qwen2RMSNorm, rotate_half, repeat_kv
+from transformers.models.qwen2.modeling_qwen2 import Qwen2SdpaAttention, Qwen2DecoderLayer, Qwen2RMSNorm, rotate_half, repeat_kv, Qwen2Attention
+
 
 def decoder_forward(
 	self,
@@ -477,20 +499,23 @@ def decoder_forward(
 	output_attentions = False,
 	use_cache = False,
 	cache_position = None,
-	compress_v=False,
+	sep_sa_ffn=False,
 	image_compress_len=36,
 	image_full_len=576,
 	**kwargs,):
-		if compress_v:
-			residual = torch.cat([hidden_states[:, :image_compress_len], hidden_states[:, image_compress_len+image_full_len:]], 1)
+		if sep_sa_ffn:
+			residual = hidden_states[:, image_full_len:]
 			hidden_states = self.input_layernorm(hidden_states)
 			kv_states = hidden_states
-			hidden_states = torch.cat([hidden_states[:, :image_compress_len], hidden_states[:, image_compress_len+image_full_len:]], 1)
+			hidden_states = hidden_states[:, image_full_len:]
+			# residual = hidden_states[:, image_full_len:]
+			# kv_states = self.input_layernorm(hidden_states)
+			# hidden_states = hidden_states[:, image_full_len:]
+			# hidden_states = self.input_layernorm(hidden_states)
 		else:
 			residual = hidden_states
 			hidden_states = self.input_layernorm(hidden_states)
 			kv_states = hidden_states
-			position_ids_kv = position_ids_q
 
 		# Cross Attention
 		hidden_states, self_attn_weights, present_key_value = self.self_attn(
@@ -502,7 +527,6 @@ def decoder_forward(
 			past_key_value=past_key_value,
 			output_attentions=output_attentions,
 			use_cache=use_cache,
-			cache_position=cache_position,
 			**kwargs,
 		)
 		hidden_states = residual + hidden_states
@@ -522,6 +546,120 @@ def decoder_forward(
 			outputs += (present_key_value,)
 
 		return outputs
+
+# def decoder_forward(
+# 	self,
+# 	hidden_states,
+# 	attention_mask = None,
+# 	position_ids_q = None,
+# 	position_ids_kv = None,
+# 	past_key_value = None,
+# 	output_attentions = False,
+# 	use_cache = False,
+# 	cache_position = None,
+# 	sep_sa_ffn = False,
+# 	image_compress_len=36,
+# 	image_full_len=576,
+# 	**kwargs,):
+# 		if sep_sa_ffn:
+# 			residual = hidden_states
+# 			hidden_states = self.input_layernorm(hidden_states)
+# 			kv_states = hidden_states
+# 			hidden_states = hidden_states[:, image_full_len:]
+# 		else:
+# 			residual = hidden_states
+# 			hidden_states = self.input_layernorm(hidden_states)
+# 			kv_states = hidden_states
+
+# 		# Cross Attention
+# 		hidden_states, self_attn_weights, present_key_value = self.self_attn(
+# 			hidden_states=hidden_states,
+# 			kv_states = kv_states,
+# 			attention_mask=attention_mask,
+# 			position_ids_q=position_ids_q,
+# 			position_ids_kv=position_ids_kv,
+# 			past_key_value=past_key_value,
+# 			output_attentions=output_attentions,
+# 			use_cache=use_cache,
+# 			sep_sa = sep_sa_ffn,
+# 			image_compress_len=image_compress_len,
+# 			image_full_len=image_full_len,
+# 			vision_mlp=self.vision_mlp_layers if sep_sa_ffn else None,
+# 			**kwargs,
+# 		)
+# 		hidden_states = residual + hidden_states
+
+# 		# Fully Connected
+# 		residual = hidden_states
+# 		hidden_states = self.post_attention_layernorm(hidden_states)
+# 		hidden_states = self.mlp(hidden_states)
+# 		hidden_states = residual + hidden_states
+
+# 		outputs = (hidden_states,)
+
+# 		if output_attentions:
+# 			outputs += (self_attn_weights,)
+
+# 		if use_cache:
+# 			outputs += (present_key_value,)
+
+# 		return outputs
+
+# def decoder_forward(
+# 	self,
+# 	hidden_states,
+# 	attention_mask = None,
+# 	position_ids_q = None,
+# 	position_ids_kv = None,
+# 	past_key_value = None,
+# 	output_attentions = False,
+# 	use_cache = False,
+# 	cache_position = None,
+# 	compress_v=False,
+# 	image_compress_len=36,
+# 	image_full_len=576,
+# 	**kwargs,):
+# 		if compress_v:
+# 			residual = torch.cat([hidden_states[:, :image_compress_len], hidden_states[:, image_compress_len+image_full_len:]], 1)
+# 			hidden_states = self.input_layernorm(hidden_states)
+# 			kv_states = hidden_states
+# 			hidden_states = torch.cat([hidden_states[:, :image_compress_len], hidden_states[:, image_compress_len+image_full_len:]], 1)
+# 		else:
+# 			residual = hidden_states
+# 			hidden_states = self.input_layernorm(hidden_states)
+# 			kv_states = hidden_states
+# 			position_ids_kv = position_ids_q
+
+# 		# Cross Attention
+# 		hidden_states, self_attn_weights, present_key_value = self.self_attn(
+# 			hidden_states=hidden_states,
+# 			kv_states = kv_states,
+# 			attention_mask=attention_mask,
+# 			position_ids_q=position_ids_q,
+# 			position_ids_kv=position_ids_kv,
+# 			past_key_value=past_key_value,
+# 			output_attentions=output_attentions,
+# 			use_cache=use_cache,
+# 			cache_position=cache_position,
+# 			**kwargs,
+# 		)
+# 		hidden_states = residual + hidden_states
+
+# 		# Fully Connected
+# 		residual = hidden_states
+# 		hidden_states = self.post_attention_layernorm(hidden_states)
+# 		hidden_states = self.mlp(hidden_states)
+# 		hidden_states = residual + hidden_states
+
+# 		outputs = (hidden_states,)
+
+# 		if output_attentions:
+# 			outputs += (self_attn_weights,)
+
+# 		if use_cache:
+# 			outputs += (present_key_value,)
+
+# 		return outputs
 
 
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids_q, position_ids_k, unsqueeze_dim=1):
@@ -545,9 +683,14 @@ def Qwen2SdpaAttention_forward(
 	position_ids_kv = None,
 	past_key_value = None,
 	output_attentions = False,
-	use_cache = False,
+	use_cache= False,
 	cache_position = None,
+	sep_sa = False,
+	image_compress_len=36,
+	image_full_len=576,
+	vision_mlp=None,
 ):
+
 	bsz, q_len, _ = hidden_states.size()
 	kv_seq_len = kv_states.shape[1]
 
@@ -597,10 +740,27 @@ def Qwen2SdpaAttention_forward(
 		is_causal=self.is_causal and attention_mask is None and q_len > 1,
 	)
 
+	# if sep_sa:
+	# 	value_states_image_full = value_states[:, :, :image_full_len]
+	# 	value_states_image_compress = attn_output[:, :, :image_compress_len]
+	# 	value_states_image_full = vision_mlp.sa(value_states_image_full, value_states_image_compress, int((image_full_len//image_compress_len)**0.5), image_full_len)
+	# 	# value_states_image_full = value_states_image_full.transpose(1, 2).contiguous().reshape(bsz, image_full_len, self.hidden_size)
 	attn_output = attn_output.transpose(1, 2).contiguous()
 	attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
 
+	# if sep_sa:
+	# 	attn_output = torch.cat([value_states_image_full, attn_output], 1)
+	
 	attn_output = self.o_proj(attn_output)
+
+	if sep_sa:
+		kv_states_image_full = kv_states[:, :image_full_len]
+		output_image_compress = attn_output[:, :image_compress_len]
+		value_states_image_full = vision_mlp.sa(kv_states_image_full, output_image_compress, int((image_full_len//image_compress_len)**0.5), image_full_len)
+		attn_output = torch.cat([value_states_image_full, attn_output], 1)
+
+	# if sep_sa:
+		# attn_output = torch.cat([value_states_image_full, attn_output], 1)
 
 	return attn_output, None, past_key_value
 
