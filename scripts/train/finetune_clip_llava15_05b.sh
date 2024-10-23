@@ -25,10 +25,10 @@ IMAGE_FOLDER="/mnt/sfs-common/krhu/penghao_workspace/data/llava_next"
 
 PROMPT_VERSION="qwen_1_5"
 
-BASE_RUN_NAME="compressv_qwen05b_CLIP_mlp_baseline_shareGPT4V_resize_pretrain_GPU"
+BASE_RUN_NAME="compressv_qwen05b_CLIP_mlp_baseline_shareGPT4V_pad_pretrain_GPU"
 echo "BASE_RUN_NAME: ${BASE_RUN_NAME}"
 
-MID_RUN_NAME="compressv_qwen05b_CLIP_mlp_baseline_resize_finetune_738k_GPU"
+MID_RUN_NAME="compressv_qwen05b_CLIP_mlp_baseline_padPT_pad_finetune_738k_GPU"
 echo "MID_RUN_NAME: ${MID_RUN_NAME}"
 
 ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --nnodes="${NNODES}" --node_rank="${RANK}" --master_addr="${ADDR}" --master_port="${PORT}" \
@@ -52,7 +52,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --nnodes="${NN
     --compress_reduce_factor 4 \
     --compress_v False \
     --compress_v_start_layer 12 \
-    --image_aspect_ratio resize \
+    --image_aspect_ratio pad \
     --mm_patch_merge_type spatial_unpad \
     --bf16 True \
     --run_name $MID_RUN_NAME \

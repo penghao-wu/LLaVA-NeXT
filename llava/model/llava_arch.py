@@ -549,7 +549,7 @@ class LlavaMetaForCausalLM(ABC):
 
 		cur_image_idx = 0
 
-		max_num_image_crops = 1
+		max_num_image_crops = self.get_model().config.max_num_image_crops
 		per_crop_token_len = self.get_model().config.per_crop_token_len
 		compress_reduce_factor = self.get_model().config.compress_reduce_factor
 
@@ -668,7 +668,7 @@ class LlavaMetaForCausalLM(ABC):
 			if num_image_crops < max_num_image_crops:
 				num_dummy_image_crops = max_num_image_crops - num_image_crops
 				cur_image_features = torch.zeros_like(image_features[0])[:1]
-				image_info = self.prepare_image_information(cur_image_features, image_sizes[cur_image_idx], is_dummy=True, dummy_num=num_dummy_image_crops)
+				image_info = self.prepare_image_information(cur_image_features, image_sizes[-1], is_dummy=True, dummy_num=num_dummy_image_crops)
 
 				cur_input_embeds_image_full.append(image_info['image_feature'])
 				cur_input_embeds_newline.append(image_info['newline_feature'])
@@ -710,7 +710,6 @@ class LlavaMetaForCausalLM(ABC):
 
 		assert getattr(self.config, "tokenizer_padding_side", "right") == "right"
 		
-
 		# pad to the max length
 		for batch_idx in range(len(input_ids)):
 			if len(input_embeds_text[batch_idx]) > text_len:

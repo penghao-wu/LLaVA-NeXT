@@ -243,7 +243,7 @@ class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
 
 			else:
 				if layer_i == compress_v_start_layer:
-					hidden_states_image_full = hidden_states[:, :image_full_len]
+					hidden_states_image_full = hidden_states[:, :image_full_len].contiguous()
 					hidden_states_newline_full = hidden_states[:, image_full_len:image_full_len+newline_len]
 					hidden_states_text = hidden_states[:, image_full_len+newline_len:]
 
@@ -314,7 +314,7 @@ class LlavaQwenModel(LlavaMetaModel, Qwen2Model):
 				hidden_states_newline_full = layer_outputs[0][:, image_compress_len:image_compress_len+newline_len]
 				hidden_states_text = layer_outputs[0][:, image_compress_len+newline_len:]
 				# hidden_states_image_full = decoder_layer.vision_mlp_layers(hidden_states_image_full, hidden_states_image_compress, compress_reduce_factor, per_crop_token_len)
-				hidden_states_image_full = self.vision_mlp_layers[layer_i-compress_v_start_layer](hidden_states_image_full, hidden_states_image_compress, compress_reduce_factor, per_crop_token_len)
+				hidden_states_image_full = self.vision_mlp_layers[layer_i-compress_v_start_layer](hidden_states_image_full, hidden_states_image_compress.contiguous(), compress_reduce_factor, per_crop_token_len)
 
 				if layer_i == len(self.layers) - 1:
 					hidden_states = torch.cat([hidden_states_image_full, hidden_states_newline_full, hidden_states_text], 1)
@@ -504,14 +504,14 @@ def decoder_forward(
 	image_full_len=576,
 	**kwargs,):
 		if sep_sa_ffn:
-			residual = hidden_states[:, image_full_len:]
-			hidden_states = self.input_layernorm(hidden_states)
-			kv_states = hidden_states
-			hidden_states = hidden_states[:, image_full_len:]
 			# residual = hidden_states[:, image_full_len:]
-			# kv_states = self.input_layernorm(hidden_states)
-			# hidden_states = hidden_states[:, image_full_len:]
 			# hidden_states = self.input_layernorm(hidden_states)
+			# kv_states = hidden_states
+			# hidden_states = hidden_states[:, image_full_len:]
+			residual = hidden_states[:, image_full_len:]
+			kv_states = self.input_layernorm(hidden_states)
+			hidden_states = hidden_states[:, image_full_len:]
+			hidden_states = self.input_layernorm(hidden_states)
 		else:
 			residual = hidden_states
 			hidden_states = self.input_layernorm(hidden_states)

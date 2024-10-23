@@ -1564,8 +1564,6 @@ def train(attn_implementation=None):
 		tokenizer = transformers.AutoTokenizer.from_pretrained(model_args.model_name_or_path, cache_dir=training_args.cache_dir, model_max_length=training_args.model_max_length, padding_side="left")
 	elif "qwen" in model_args.model_name_or_path.lower():
 		tokenizer = transformers.AutoTokenizer.from_pretrained(model_args.model_name_or_path, cache_dir=training_args.cache_dir, model_max_length=training_args.model_max_length, padding_side="right")
-
-		tokenizer = transformers.AutoTokenizer.from_pretrained("Qwen/Qwen2-0.5B-Instruct", model_max_length=2048, padding_side="right")
 	elif (
 		"wizardlm-2" in model_args.model_name_or_path.lower()
 		or "vicuna" in model_args.model_name_or_path.lower()
